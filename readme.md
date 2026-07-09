@@ -22,9 +22,11 @@ The short version: GLM 5.2 keeps matching or beating closed models on design pre
 
 - [DeepSeek V4 Pro vs GLM 5.2 vs Fable 5](https://x.com/MrAhmadAwais/status/2074536879308026031)
 - [DeepSeek V4 Pro vs GLM 5.2 vs Fable 5](https://x.com/naymur_dev/status/2073059979834331206)
+- [Fable 5 vs GPT-5.5 vs GLM 5.2 vs DeepSeek V4 Pro](https://x.com/naymur_dev/status/2074533456709825022)
 
 ## Landing Pages & SaaS
 
+- [GLM 5.2 vs MiniMax 3 vs DeepSeek V4 Pro vs Kimi K2.7 Code](https://x.com/naymur_dev/status/2075000595082281276)
 - [GLM 5.2 vs Sonnet 5](https://x.com/CommandCodeAI/status/2072363959773233606)
 - [GLM 5.2 vs Opus 4.8](https://x.com/CommandCodeAI/status/2071942930710090111)
 - [GLM 5.2 vs Sonnet 5](https://x.com/naymur_dev/status/2072425070069432359)

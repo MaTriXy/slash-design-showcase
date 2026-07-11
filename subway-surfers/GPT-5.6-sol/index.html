@@ -1,0 +1,1502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+  />
+  <title>City Rush Runner</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 50% 15%, #65d8ff 0%, #27629c 45%, #122541 100%);
+      font-family: Arial, Helvetica, sans-serif;
+      touch-action: none;
+      user-select: none;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+    }
+
+    .game-shell {
+      position: relative;
+      width: min(100vw, 400px);
+      height: min(100vh, 700px);
+      overflow: hidden;
+      background: #72d7ff;
+      box-shadow:
+        0 24px 80px rgba(0, 0, 0, 0.45),
+        inset 0 0 0 2px rgba(255, 255, 255, 0.2);
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+    }
+
+    .touch-controls {
+      position: absolute;
+      right: 14px;
+      bottom: 14px;
+      display: flex;
+      gap: 10px;
+      pointer-events: none;
+      opacity: 0.85;
+    }
+
+    .touch-hint {
+      display: grid;
+      place-items: center;
+      width: 50px;
+      height: 50px;
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      border-radius: 16px;
+      background: rgba(10, 26, 55, 0.34);
+      color: white;
+      font-size: 20px;
+      font-weight: 900;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+    }
+  </style>
+</head>
+<body>
+  <div class="game-shell">
+    <canvas id="game" width="400" height="700"></canvas>
+
+    <div class="touch-controls" aria-hidden="true">
+      <div class="touch-hint">↕</div>
+      <div class="touch-hint">↔</div>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+
+      const W = canvas.width;
+      const H = canvas.height;
+
+      const STATE = {
+        START: "start",
+        PLAYING: "playing",
+        GAME_OVER: "game-over"
+      };
+
+      const LANES = [-1, 0, 1];
+      const LANE_WORLD_X = [-132, 0, 132];
+      const PLAYER_GROUND_Y = 590;
+      const HORIZON_Y = 178;
+      const ROAD_BOTTOM_Y = 740;
+      const ROAD_TOP_HALF = 42;
+      const ROAD_BOTTOM_HALF = 250;
+
+      let gameState = STATE.START;
+      let lastTime = performance.now();
+      let elapsed = 0;
+      let distance = 0;
+      let score = 0;
+      let bestScore = Number(localStorage.getItem("cityRushBest") || 0);
+      let speed = 285;
+      let spawnTimer = 0;
+      let coinChainTimer = 0;
+      let shake = 0;
+      let flash = 0;
+
+      let obstacles = [];
+      let coins = [];
+      let particles = [];
+      let buildings = [];
+      let clouds = [];
+      let roadsideItems = [];
+
+      const player = {
+        lane: 0,
+        targetLane: 0,
+        x: 0,
+        y: PLAYER_GROUND_Y,
+        z: 0,
+        vz: 0,
+        jumpHeight: 0,
+        sliding: false,
+        slideTimer: 0,
+        runningPhase: 0,
+        tilt: 0,
+        alive: true
+      };
+
+      const touch = {
+        active: false,
+        startX: 0,
+        startY: 0,
+        currentX: 0,
+        currentY: 0,
+        startTime: 0
+      };
+
+      function clamp(v, min, max) {
+        return Math.max(min, Math.min(max, v));
+      }
+
+      function lerp(a, b, t) {
+        return a + (b - a) * t;
+      }
+
+      function easeOutCubic(t) {
+        return 1 - Math.pow(1 - t, 3);
+      }
+
+      function random(min, max) {
+        return Math.random() * (max - min) + min;
+      }
+
+      function pick(array) {
+        return array[Math.floor(Math.random() * array.length)];
+      }
+
+      function roundedRect(x, y, w, h, r) {
+        const radius = Math.min(r, w / 2, h / 2);
+        ctx.beginPath();
+        ctx.moveTo(x + radius, y);
+        ctx.arcTo(x + w, y, x + w, y + h, radius);
+        ctx.arcTo(x + w, y + h, x, y + h, radius);
+        ctx.arcTo(x, y + h, x, y, radius);
+        ctx.arcTo(x, y, x + w, y, radius);
+        ctx.closePath();
+      }
+
+      function fillRoundedRect(x, y, w, h, r, fill) {
+        roundedRect(x, y, w, h, r);
+        ctx.fillStyle = fill;
+        ctx.fill();
+      }
+
+      function strokeRoundedRect(x, y, w, h, r, stroke, lineWidth = 1) {
+        roundedRect(x, y, w, h, r);
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = lineWidth;
+        ctx.stroke();
+      }
+
+      function worldToScreen(worldX, depth) {
+        const d = Math.max(0, depth);
+        const curve = 0.16 * Math.sin(distance * 0.0018 + d * 3.2);
+        const roadCenter = W / 2 + curve * 58 * d;
+        const perspective = Math.pow(d, 1.35);
+        const roadHalf = lerp(ROAD_TOP_HALF, ROAD_BOTTOM_HALF, perspective);
+
+        return {
+          x: roadCenter + worldX * (roadHalf / ROAD_BOTTOM_HALF),
+          y: lerp(HORIZON_Y, ROAD_BOTTOM_Y, perspective),
+          scale: lerp(0.18, 1.22, Math.pow(d, 1.18)),
+          roadCenter,
+          roadHalf
+        };
+      }
+
+      function resetPlayer() {
+        player.lane = 0;
+        player.targetLane = 0;
+        player.x = 0;
+        player.y = PLAYER_GROUND_Y;
+        player.z = 0;
+        player.vz = 0;
+        player.jumpHeight = 0;
+        player.sliding = false;
+        player.slideTimer = 0;
+        player.runningPhase = 0;
+        player.tilt = 0;
+        player.alive = true;
+      }
+
+      function createWorld() {
+        buildings = [];
+        clouds = [];
+        roadsideItems = [];
+
+        const buildingColors = [
+          "#4a8bb5",
+          "#34729c",
+          "#5c75a8",
+          "#5a91a9",
+          "#6b79a8",
+          "#3d7191",
+          "#756fa3"
+        ];
+
+        for (let side = -1; side <= 1; side += 2) {
+          let x = side < 0 ? -20 : W + 20;
+
+          for (let i = 0; i < 12; i++) {
+            const width = random(35, 72);
+            const height = random(80, 220);
+
+            if (side < 0) x -= width * random(0.5, 0.9);
+
+            buildings.push({
+              side,
+              x,
+              width,
+              height,
+              color: pick(buildingColors),
+              roof: Math.random() < 0.35,
+              windows: Math.floor(random(2, 5)),
+              seed: Math.random() * 100
+            });
+
+            if (side > 0) x += width * random(0.5, 0.9);
+          }
+        }
+
+        for (let i = 0; i < 8; i++) {
+          clouds.push({
+            x: random(-80, W + 80),
+            y: random(35, 150),
+            size: random(22, 48),
+            speed: random(3, 10)
+          });
+        }
+
+        for (let i = 0; i < 18; i++) {
+          roadsideItems.push({
+            side: Math.random() < 0.5 ? -1 : 1,
+            depth: i / 18,
+            type: Math.random() < 0.55 ? "lamp" : "tree"
+          });
+        }
+      }
+
+      function resetGame() {
+        obstacles = [];
+        coins = [];
+        particles = [];
+        elapsed = 0;
+        distance = 0;
+        score = 0;
+        speed = 285;
+        spawnTimer = 0.65;
+        coinChainTimer = 1.3;
+        shake = 0;
+        flash = 0;
+        resetPlayer();
+        createWorld();
+      }
+
+      function startGame() {
+        resetGame();
+        gameState = STATE.PLAYING;
+      }
+
+      function endGame() {
+        if (gameState !== STATE.PLAYING) return;
+        gameState = STATE.GAME_OVER;
+        player.alive = false;
+        shake = 18;
+        flash = 0.5;
+        bestScore = Math.max(bestScore, Math.floor(score));
+        localStorage.setItem("cityRushBest", String(bestScore));
+        burst(W / 2 + player.x, player.y - player.jumpHeight - 25, "#ffcc4d", 28, 220);
+      }
+
+      function moveLane(direction) {
+        if (gameState === STATE.START || gameState === STATE.GAME_OVER) {
+          startGame();
+          return;
+        }
+        player.targetLane = clamp(player.targetLane + direction, -1, 1);
+      }
+
+      function jump() {
+        if (gameState === STATE.START || gameState === STATE.GAME_OVER) {
+          startGame();
+          return;
+        }
+
+        if (gameState === STATE.PLAYING && player.jumpHeight <= 1 && !player.sliding) {
+          player.vz = 780;
+          player.z = 0;
+          burst(W / 2 + player.x, player.y + 8, "rgba(232,245,255,0.8)", 10, 95);
+        }
+      }
+
+      function slide() {
+        if (gameState === STATE.START || gameState === STATE.GAME_OVER) {
+          startGame();
+          return;
+        }
+
+        if (gameState === STATE.PLAYING && player.jumpHeight < 18 && !player.sliding) {
+          player.sliding = true;
+          player.slideTimer = 0.72;
+        }
+      }
+
+      function spawnObstacle() {
+        const lane = pick(LANES);
+        const roll = Math.random();
+        const type = roll < 0.42 ? "barrier" : roll < 0.72 ? "sign" : "train";
+
+        obstacles.push({ lane, type, depth: 0.015, passed: false, hit: false });
+
+        if (Math.random() < 0.33) {
+          const secondLane = pick(LANES.filter((l) => l !== lane));
+          obstacles.push({
+            lane: secondLane,
+            type: Math.random() < 0.55 ? "barrier" : "sign",
+            depth: -0.075,
+            passed: false,
+            hit: false
+          });
+        }
+      }
+
+      function spawnCoinLine() {
+        const lane = pick(LANES);
+        const count = Math.floor(random(4, 8));
+        const pattern = Math.random();
+
+        for (let i = 0; i < count; i++) {
+          let coinLane = lane;
+          let height = 0;
+
+          if (pattern < 0.3) {
+            height = Math.sin((i / Math.max(1, count - 1)) * Math.PI) * 120;
+          } else if (pattern < 0.52) {
+            coinLane = clamp(lane + (i % 2 === 0 ? 0 : 1), -1, 1);
+          } else if (pattern < 0.7) {
+            coinLane = LANES[i % 3];
+          }
+
+          coins.push({
+            lane: coinLane,
+            depth: -i * 0.067,
+            height,
+            spin: random(0, Math.PI * 2),
+            collected: false
+          });
+        }
+      }
+
+      function burst(x, y, color, count, force) {
+        for (let i = 0; i < count; i++) {
+          const angle = random(0, Math.PI * 2);
+          const velocity = random(force * 0.3, force);
+
+          particles.push({
+            x,
+            y,
+            vx: Math.cos(angle) * velocity,
+            vy: Math.sin(angle) * velocity,
+            life: random(0.28, 0.72),
+            maxLife: random(0.28, 0.72),
+            size: random(2, 6),
+            color,
+            gravity: random(120, 360)
+          });
+        }
+      }
+
+      function update(dt) {
+        elapsed += dt;
+        flash = Math.max(0, flash - dt * 2.8);
+        shake *= Math.pow(0.0007, dt);
+
+        for (const cloud of clouds) {
+          cloud.x += cloud.speed * dt;
+          if (cloud.x - cloud.size * 2 > W) cloud.x = -cloud.size * 3;
+        }
+
+        if (gameState !== STATE.PLAYING) {
+          player.runningPhase += dt * 2.6;
+          updateParticles(dt);
+          return;
+        }
+
+        speed = Math.min(520, 285 + distance * 0.012);
+        distance += speed * dt * 0.105;
+        score += speed * dt * 0.04;
+
+        player.runningPhase += dt * (9 + speed * 0.018);
+
+        const desiredX = LANE_WORLD_X[player.targetLane + 1];
+        const previousX = player.x;
+        player.x = lerp(player.x, desiredX, 1 - Math.pow(0.00003, dt));
+        player.tilt = lerp(
+          player.tilt,
+          clamp((player.x - previousX) * 0.055, -0.22, 0.22),
+          1 - Math.pow(0.005, dt)
+        );
+
+        if (player.vz !== 0 || player.z > 0) {
+          player.vz -= 1880 * dt;
+          player.z += player.vz * dt;
+
+          if (player.z <= 0) {
+            player.z = 0;
+            player.vz = 0;
+            burst(W / 2 + player.x, PLAYER_GROUND_Y + 10, "rgba(235,248,255,0.75)", 8, 75);
+          }
+        }
+
+        player.jumpHeight = player.z;
+
+        if (player.sliding) {
+          player.slideTimer -= dt;
+          if (player.slideTimer <= 0) player.sliding = false;
+        }
+
+        spawnTimer -= dt;
+        if (spawnTimer <= 0) {
+          spawnObstacle();
+          spawnTimer = random(1.05, 1.55) * (285 / speed);
+        }
+
+        coinChainTimer -= dt;
+        if (coinChainTimer <= 0) {
+          spawnCoinLine();
+          coinChainTimer = random(1.4, 2.35);
+        }
+
+        const depthSpeed = speed * dt / 840;
+
+        for (const obstacle of obstacles) {
+          obstacle.depth += depthSpeed;
+
+          if (!obstacle.passed && obstacle.depth > 0.83) {
+            const sameLane = Math.abs(player.x - LANE_WORLD_X[obstacle.lane + 1]) < 48;
+
+            if (sameLane) {
+              let safe = false;
+              if (obstacle.type === "barrier") safe = player.jumpHeight > 78;
+              else if (obstacle.type === "sign") safe = player.sliding;
+              else if (obstacle.type === "train") safe = false;
+
+              if (!safe) {
+                obstacle.hit = true;
+                endGame();
+              }
+            }
+
+            obstacle.passed = true;
+          }
+        }
+
+        for (const coin of coins) {
+          coin.depth += depthSpeed;
+          coin.spin += dt * 8;
+
+          if (!coin.collected && coin.depth > 0.79 && coin.depth < 1.02) {
+            const laneX = LANE_WORLD_X[coin.lane + 1];
+            const sameLane = Math.abs(player.x - laneX) < 52;
+            const playerCenterHeight = player.jumpHeight + (player.sliding ? 18 : 52);
+            const sameHeight = Math.abs(playerCenterHeight - coin.height) < 80;
+
+            if (sameLane && sameHeight) {
+              coin.collected = true;
+              score += 25;
+              const p = worldToScreen(laneX, coin.depth);
+              burst(p.x, p.y - coin.height * p.scale, "#ffd341", 11, 130);
+            }
+          }
+        }
+
+        obstacles = obstacles.filter((o) => o.depth < 1.5);
+        coins = coins.filter((c) => c.depth < 1.2 && !c.collected);
+
+        for (const item of roadsideItems) {
+          item.depth += depthSpeed * 0.78;
+          if (item.depth > 1.1) {
+            item.depth -= 1.12;
+            item.side = Math.random() < 0.5 ? -1 : 1;
+            item.type = Math.random() < 0.58 ? "lamp" : "tree";
+          }
+        }
+
+        updateParticles(dt);
+      }
+
+      function updateParticles(dt) {
+        for (const p of particles) {
+          p.life -= dt;
+          p.vy += p.gravity * dt;
+          p.x += p.vx * dt;
+          p.y += p.vy * dt;
+        }
+        particles = particles.filter((p) => p.life > 0);
+      }
+
+      function drawSky() {
+        const gradient = ctx.createLinearGradient(0, 0, 0, H);
+        gradient.addColorStop(0, "#38b9f4");
+        gradient.addColorStop(0.42, "#99e4ff");
+        gradient.addColorStop(0.7, "#f4c98a");
+        gradient.addColorStop(1, "#e99058");
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, W, H);
+
+        const sunGradient = ctx.createRadialGradient(310, 88, 4, 310, 88, 72);
+        sunGradient.addColorStop(0, "rgba(255,255,223,0.95)");
+        sunGradient.addColorStop(0.2, "rgba(255,242,171,0.8)");
+        sunGradient.addColorStop(1, "rgba(255,224,120,0)");
+        ctx.fillStyle = sunGradient;
+        ctx.beginPath();
+        ctx.arc(310, 88, 72, 0, Math.PI * 2);
+        ctx.fill();
+
+        for (const cloud of clouds) drawCloud(cloud);
+      }
+
+      function drawCloud(cloud) {
+        ctx.save();
+        ctx.translate(cloud.x, cloud.y);
+        ctx.globalAlpha = 0.42;
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(-cloud.size * 0.5, 0, cloud.size * 0.42, 0, Math.PI * 2);
+        ctx.arc(0, -cloud.size * 0.18, cloud.size * 0.55, 0, Math.PI * 2);
+        ctx.arc(cloud.size * 0.55, 0, cloud.size * 0.36, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function shadeColor(hex, amount) {
+        const color = hex.replace("#", "");
+        const num = parseInt(color, 16);
+        const r = clamp((num >> 16) + amount, 0, 255);
+        const g = clamp(((num >> 8) & 0x00ff) + amount, 0, 255);
+        const b = clamp((num & 0x0000ff) + amount, 0, 255);
+        return `rgb(${r},${g},${b})`;
+      }
+
+      function drawBuildings() {
+        ctx.save();
+        ctx.fillStyle = "#577899";
+        ctx.fillRect(0, 140, W, 90);
+
+        for (const building of buildings) {
+          const parallax = Math.sin(distance * 0.0007 + building.seed) * 5;
+          const x = building.x + parallax;
+          const y = HORIZON_Y - building.height + 26;
+
+          ctx.fillStyle = building.color;
+          ctx.fillRect(x, y, building.width, building.height);
+
+          if (building.roof) {
+            ctx.fillStyle = shadeColor(building.color, -25);
+            ctx.beginPath();
+            ctx.moveTo(x - 5, y);
+            ctx.lineTo(x + building.width / 2, y - 20);
+            ctx.lineTo(x + building.width + 5, y);
+            ctx.closePath();
+            ctx.fill();
+          }
+
+          ctx.fillStyle = "rgba(11,31,59,0.25)";
+          ctx.fillRect(
+            building.side < 0 ? x + building.width * 0.72 : x,
+            y,
+            building.width * 0.28,
+            building.height
+          );
+
+          const rows = Math.floor(building.height / 28);
+          const cols = building.windows;
+
+          for (let row = 0; row < rows; row++) {
+            for (let col = 0; col < cols; col++) {
+              ctx.fillStyle =
+                (row + col + Math.floor(building.seed)) % 4 === 0
+                  ? "rgba(255,223,119,0.68)"
+                  : "rgba(182,232,255,0.3)";
+
+              const pad = 7;
+              const windowW = (building.width - pad * 2 - (cols - 1) * 5) / cols;
+              ctx.fillRect(
+                x + pad + col * (windowW + 5),
+                y + 12 + row * 25,
+                Math.max(3, windowW),
+                8
+              );
+            }
+          }
+        }
+
+        ctx.restore();
+      }
+
+      function drawRoad() {
+        const curve = 0.16 * Math.sin(distance * 0.0018);
+
+        ctx.fillStyle = "#678455";
+        ctx.beginPath();
+        ctx.moveTo(0, HORIZON_Y);
+        ctx.lineTo(W / 2 - ROAD_TOP_HALF + curve * 22, HORIZON_Y);
+        ctx.lineTo(W / 2 - ROAD_BOTTOM_HALF + curve * 58, ROAD_BOTTOM_Y);
+        ctx.lineTo(0, H);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.moveTo(W, HORIZON_Y);
+        ctx.lineTo(W / 2 + ROAD_TOP_HALF + curve * 22, HORIZON_Y);
+        ctx.lineTo(W / 2 + ROAD_BOTTOM_HALF + curve * 58, ROAD_BOTTOM_Y);
+        ctx.lineTo(W, H);
+        ctx.closePath();
+        ctx.fill();
+
+        const railGradient = ctx.createLinearGradient(0, HORIZON_Y, 0, H);
+        railGradient.addColorStop(0, "#63717b");
+        railGradient.addColorStop(1, "#242f38");
+        ctx.fillStyle = railGradient;
+        ctx.beginPath();
+        ctx.moveTo(W / 2 - ROAD_TOP_HALF + curve * 22, HORIZON_Y);
+        ctx.lineTo(W / 2 + ROAD_TOP_HALF + curve * 22, HORIZON_Y);
+        ctx.lineTo(W / 2 + ROAD_BOTTOM_HALF + curve * 58, ROAD_BOTTOM_Y);
+        ctx.lineTo(W / 2 - ROAD_BOTTOM_HALF + curve * 58, ROAD_BOTTOM_Y);
+        ctx.closePath();
+        ctx.fill();
+
+        const stripeOffset = (distance * 0.013) % 0.13;
+
+        for (let i = -1; i <= 1; i += 2) {
+          ctx.strokeStyle = "rgba(245,248,232,0.62)";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+
+          for (let step = 0; step <= 30; step++) {
+            const depth = step / 30;
+            const p = worldToScreen(i * 67, depth);
+            if (step === 0) ctx.moveTo(p.x, p.y);
+            else ctx.lineTo(p.x, p.y);
+          }
+
+          ctx.stroke();
+        }
+
+        for (let i = -1; i <= 1; i++) {
+          ctx.strokeStyle = "rgba(30,36,41,0.8)";
+          ctx.lineWidth = 3.5;
+          ctx.beginPath();
+
+          for (let step = 0; step <= 32; step++) {
+            const depth = step / 32;
+            const p = worldToScreen(i * 132, depth);
+            if (step === 0) ctx.moveTo(p.x, p.y);
+            else ctx.lineTo(p.x, p.y);
+          }
+
+          ctx.stroke();
+        }
+
+        for (let i = -4; i < 13; i++) {
+          const raw = (i * 0.13 + stripeOffset) % 1.13;
+          const depth = raw < 0 ? raw + 1.13 : raw;
+          const p = worldToScreen(0, depth);
+
+          ctx.save();
+          ctx.translate(p.roadCenter, p.y);
+          ctx.scale(p.scale, p.scale);
+          ctx.fillStyle = "rgba(32,37,42,0.95)";
+          ctx.fillRect(-p.roadHalf / p.scale, -2, (p.roadHalf * 2) / p.scale, 4);
+          ctx.restore();
+        }
+      }
+
+      function drawRoadsideItems() {
+        const sorted = [...roadsideItems].sort((a, b) => a.depth - b.depth);
+
+        for (const item of sorted) {
+          const p = worldToScreen(0, item.depth);
+          const offset = p.roadHalf + 30 * p.scale;
+          const x = p.roadCenter + item.side * offset;
+          const y = p.y;
+          if (item.type === "lamp") drawLamp(x, y, p.scale, item.side);
+          else drawTree(x, y, p.scale);
+        }
+      }
+
+      function drawLamp(x, y, scale, side) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(scale, scale);
+
+        ctx.strokeStyle = "#313b45";
+        ctx.lineWidth = 5;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(0, -96);
+        ctx.quadraticCurveTo(0, -112, side * -17, -112);
+        ctx.stroke();
+
+        const glow = ctx.createRadialGradient(side * -22, -110, 0, side * -22, -110, 26);
+        glow.addColorStop(0, "rgba(255,238,154,0.9)");
+        glow.addColorStop(1, "rgba(255,224,118,0)");
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(side * -22, -110, 26, 0, Math.PI * 2);
+        ctx.fill();
+
+        fillRoundedRect(side * -30 - 11, -119, 22, 14, 4, "#f4d982");
+        ctx.restore();
+      }
+
+      function drawTree(x, y, scale) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(scale, scale);
+
+        ctx.fillStyle = "#704a32";
+        ctx.fillRect(-5, -60, 10, 60);
+
+        ctx.fillStyle = "#2a8057";
+        ctx.beginPath();
+        ctx.arc(0, -75, 30, 0, Math.PI * 2);
+        ctx.arc(-18, -62, 22, 0, Math.PI * 2);
+        ctx.arc(20, -60, 23, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "rgba(132,213,108,0.45)";
+        ctx.beginPath();
+        ctx.arc(-10, -85, 13, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawCoins() {
+        const sorted = [...coins].sort((a, b) => a.depth - b.depth);
+
+        for (const coin of sorted) {
+          if (coin.depth < 0) continue;
+
+          const laneX = LANE_WORLD_X[coin.lane + 1];
+          const p = worldToScreen(laneX, coin.depth);
+          const y = p.y - coin.height * p.scale;
+          const squash = Math.abs(Math.cos(coin.spin)) * 0.72 + 0.18;
+          const size = 15 * p.scale;
+
+          ctx.save();
+          ctx.translate(p.x, y);
+          ctx.scale(squash, 1);
+
+          const glow = ctx.createRadialGradient(0, 0, size * 0.2, 0, 0, size * 2.4);
+          glow.addColorStop(0, "rgba(255,238,112,0.65)");
+          glow.addColorStop(1, "rgba(255,208,37,0)");
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(0, 0, size * 2.4, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = "#ffc928";
+          ctx.beginPath();
+          ctx.arc(0, 0, size, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.strokeStyle = "#fff09a";
+          ctx.lineWidth = Math.max(1, size * 0.18);
+          ctx.stroke();
+
+          ctx.fillStyle = "#f2a611";
+          ctx.beginPath();
+          ctx.arc(0, 0, size * 0.48, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = "#ffe66d";
+          ctx.fillRect(-size * 0.14, -size * 0.55, size * 0.28, size * 1.1);
+          ctx.restore();
+        }
+      }
+
+      function drawObstacles() {
+        const sorted = [...obstacles].sort((a, b) => a.depth - b.depth);
+
+        for (const obstacle of sorted) {
+          if (obstacle.depth < 0) continue;
+
+          const laneX = LANE_WORLD_X[obstacle.lane + 1];
+          const p = worldToScreen(laneX, obstacle.depth);
+
+          if (obstacle.type === "barrier") drawBarrier(p.x, p.y, p.scale);
+          else if (obstacle.type === "sign") drawOverheadSign(p.x, p.y, p.scale);
+          else drawTrain(p.x, p.y, p.scale);
+        }
+      }
+
+      function drawBarrier(x, y, scale) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(scale, scale);
+
+        ctx.fillStyle = "rgba(0,0,0,0.18)";
+        ctx.beginPath();
+        ctx.ellipse(0, 4, 48, 12, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#282f36";
+        ctx.fillRect(-40, -9, 9, 17);
+        ctx.fillRect(31, -9, 9, 17);
+
+        fillRoundedRect(-48, -50, 96, 47, 7, "#f7bd2e");
+        strokeRoundedRect(-48, -50, 96, 47, 7, "#9d611b", 3);
+
+        ctx.save();
+        roundedRect(-45, -47, 90, 41, 4);
+        ctx.clip();
+        ctx.fillStyle = "#232a31";
+        ctx.rotate(-0.18);
+
+        for (let i = -100; i < 120; i += 26) ctx.fillRect(i, -70, 13, 110);
+        ctx.restore();
+
+        fillRoundedRect(-35, -61, 18, 14, 5, "#ff5e45");
+        fillRoundedRect(17, -61, 18, 14, 5, "#ff5e45");
+        ctx.restore();
+      }
+
+      function drawOverheadSign(x, y, scale) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(scale, scale);
+
+        ctx.fillStyle = "rgba(0,0,0,0.18)";
+        ctx.beginPath();
+        ctx.ellipse(0, 4, 58, 13, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#3e464d";
+        ctx.fillRect(-53, -76, 8, 77);
+        ctx.fillRect(45, -76, 8, 77);
+
+        fillRoundedRect(-61, -112, 122, 42, 6, "#ed544d");
+        strokeRoundedRect(-61, -112, 122, 42, 6, "#8c2a2b", 3);
+
+        ctx.fillStyle = "#fff6d7";
+        ctx.font = "900 18px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText("DUCK!", 0, -84);
+
+        ctx.fillStyle = "#f8d24d";
+        ctx.beginPath();
+        ctx.moveTo(-10, -65);
+        ctx.lineTo(10, -65);
+        ctx.lineTo(0, -52);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawTrain(x, y, scale) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(scale, scale);
+
+        ctx.fillStyle = "rgba(0,0,0,0.28)";
+        ctx.beginPath();
+        ctx.ellipse(0, 5, 57, 16, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        fillRoundedRect(-58, -190, 116, 193, 19, "#3a0e16");
+
+        const bodyGradient = ctx.createLinearGradient(-50, -180, 50, 0);
+        bodyGradient.addColorStop(0, "#de4754");
+        bodyGradient.addColorStop(0.55, "#c63243");
+        bodyGradient.addColorStop(1, "#8c1f35");
+
+        fillRoundedRect(-55, -187, 110, 187, 17, bodyGradient);
+        strokeRoundedRect(-55, -187, 110, 187, 17, "#6d2431", 4);
+        fillRoundedRect(-45, -169, 90, 54, 10, "#1f4862");
+
+        const glass = ctx.createLinearGradient(0, -169, 0, -115);
+        glass.addColorStop(0, "#b7efff");
+        glass.addColorStop(1, "#4c9ec2");
+        ctx.fillStyle = glass;
+        roundedRect(-41, -165, 82, 46, 7);
+        ctx.fill();
+
+        ctx.strokeStyle = "rgba(255,255,255,0.5)";
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(-30, -157);
+        ctx.lineTo(10, -123);
+        ctx.stroke();
+
+        ctx.fillStyle = "#f6d34b";
+        ctx.beginPath();
+        ctx.arc(-33, -89, 9, 0, Math.PI * 2);
+        ctx.arc(33, -89, 9, 0, Math.PI * 2);
+        ctx.fill();
+
+        fillRoundedRect(-38, -64, 76, 16, 5, "#eeeeea");
+
+        ctx.fillStyle = "#2a3137";
+        ctx.fillRect(-44, -34, 88, 12);
+        ctx.fillRect(-44, -13, 88, 9);
+        ctx.restore();
+      }
+
+      function drawPlayer() {
+        const px = W / 2 + player.x;
+        const py = PLAYER_GROUND_Y - player.jumpHeight;
+        const run = Math.sin(player.runningPhase);
+        const runOpposite = Math.sin(player.runningPhase + Math.PI);
+
+        ctx.save();
+        ctx.translate(px, py);
+        ctx.rotate(player.tilt);
+
+        if (player.sliding) drawSlidingCharacter(run);
+        else drawRunningCharacter(run, runOpposite);
+
+        ctx.restore();
+      }
+
+      function drawRunningCharacter(run, runOpposite) {
+        const bodyBob = player.jumpHeight > 0 ? 0 : Math.abs(Math.sin(player.runningPhase)) * 2;
+
+        ctx.save();
+        ctx.translate(0, -bodyBob);
+
+        ctx.fillStyle = "rgba(0,0,0,0.22)";
+        ctx.beginPath();
+        ctx.ellipse(
+          0,
+          player.jumpHeight + 23,
+          30 - player.jumpHeight * 0.025,
+          9 - player.jumpHeight * 0.006,
+          0,
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+
+        drawLeg(-10, 2, run * 12, runOpposite * 8);
+        drawLeg(10, 2, runOpposite * 12, run * 8);
+        drawArm(-23, -43, runOpposite * 12);
+        drawArm(23, -43, run * 12);
+
+        ctx.fillStyle = "#23344f";
+        ctx.beginPath();
+        ctx.moveTo(-18, -55);
+        ctx.quadraticCurveTo(-21, -21, -15, 3);
+        ctx.lineTo(15, 3);
+        ctx.quadraticCurveTo(21, -22, 18, -55);
+        ctx.closePath();
+        ctx.fill();
+
+        const hoodieGradient = ctx.createLinearGradient(-18, -65, 18, -15);
+        hoodieGradient.addColorStop(0, "#45d1ec");
+        hoodieGradient.addColorStop(1, "#167ba8");
+
+        ctx.fillStyle = hoodieGradient;
+        ctx.beginPath();
+        ctx.moveTo(-20, -60);
+        ctx.quadraticCurveTo(-17, -75, 0, -78);
+        ctx.quadraticCurveTo(17, -75, 20, -60);
+        ctx.lineTo(17, -20);
+        ctx.quadraticCurveTo(0, -13, -17, -20);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = "#0e577d";
+        ctx.fillRect(-17, -32, 34, 7);
+
+        ctx.fillStyle = "#f0b487";
+        ctx.beginPath();
+        ctx.arc(0, -88, 17, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#473124";
+        ctx.beginPath();
+        ctx.arc(0, -93, 18, Math.PI, Math.PI * 2);
+        ctx.lineTo(15, -88);
+        ctx.quadraticCurveTo(7, -101, -6, -103);
+        ctx.quadraticCurveTo(-17, -99, -18, -90);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = "#132232";
+        ctx.beginPath();
+        ctx.moveTo(-20, -91);
+        ctx.quadraticCurveTo(0, -111, 20, -91);
+        ctx.lineTo(16, -82);
+        ctx.quadraticCurveTo(0, -92, -16, -82);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = "#f3ca45";
+        ctx.fillRect(-2, -106, 4, 16);
+
+        ctx.fillStyle = "#26354a";
+        ctx.beginPath();
+        ctx.arc(-6, -88, 2, 0, Math.PI * 2);
+        ctx.arc(6, -88, 2, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = "#955f4a";
+        ctx.lineWidth = 1.7;
+        ctx.beginPath();
+        ctx.arc(0, -81, 5, 0.18, Math.PI - 0.18);
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      function drawLeg(baseX, baseY, stride, footSwing) {
+        ctx.save();
+        ctx.translate(baseX, baseY);
+
+        ctx.strokeStyle = "#2d3e5d";
+        ctx.lineWidth = 10;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(0, -3);
+        ctx.lineTo(stride * 0.62, 21);
+        ctx.lineTo(stride + footSwing * 0.2, 43);
+        ctx.stroke();
+
+        ctx.strokeStyle = "#e8f0f5";
+        ctx.lineWidth = 9;
+        ctx.beginPath();
+        ctx.moveTo(stride + footSwing * 0.2 - 7, 43);
+        ctx.lineTo(stride + footSwing * 0.2 + 10, 43);
+        ctx.stroke();
+
+        ctx.strokeStyle = "#db4c45";
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(stride + footSwing * 0.2 - 5, 39);
+        ctx.lineTo(stride + footSwing * 0.2 + 8, 39);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawArm(baseX, baseY, swing) {
+        ctx.save();
+        ctx.translate(baseX, baseY);
+
+        ctx.strokeStyle = "#1a81ad";
+        ctx.lineWidth = 10;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(swing * 0.45, 18);
+        ctx.lineTo(swing * 0.65, 35);
+        ctx.stroke();
+
+        ctx.fillStyle = "#efb184";
+        ctx.beginPath();
+        ctx.arc(swing * 0.65, 35, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawSlidingCharacter(run) {
+        ctx.save();
+        ctx.translate(0, 17);
+        ctx.rotate(-0.14);
+
+        ctx.fillStyle = "rgba(0,0,0,0.25)";
+        ctx.beginPath();
+        ctx.ellipse(4, 26, 41, 10, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = "#2d3e5d";
+        ctx.lineWidth = 12;
+        ctx.lineCap = "round";
+
+        ctx.beginPath();
+        ctx.moveTo(-8, -3);
+        ctx.lineTo(-27, 15);
+        ctx.lineTo(-46, 20);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(7, -2);
+        ctx.lineTo(23, 17);
+        ctx.lineTo(43, 21);
+        ctx.stroke();
+
+        ctx.strokeStyle = "#e8f0f5";
+        ctx.lineWidth = 9;
+
+        ctx.beginPath();
+        ctx.moveTo(-51, 20);
+        ctx.lineTo(-38, 20);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(38, 21);
+        ctx.lineTo(51, 21);
+        ctx.stroke();
+
+        ctx.fillStyle = "#1887b3";
+        ctx.beginPath();
+        ctx.ellipse(0, -22, 28, 24, -0.08, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#f0b487";
+        ctx.beginPath();
+        ctx.arc(-2, -51, 15, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#3c2c24";
+        ctx.beginPath();
+        ctx.arc(-2, -56, 16, Math.PI, Math.PI * 2);
+        ctx.lineTo(13, -52);
+        ctx.quadraticCurveTo(4, -64, -12, -64);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = "#172638";
+        ctx.beginPath();
+        ctx.moveTo(-18, -56);
+        ctx.quadraticCurveTo(-2, -73, 18, -55);
+        ctx.lineTo(12, -48);
+        ctx.quadraticCurveTo(-2, -57, -15, -47);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.strokeStyle = "#1a81ad";
+        ctx.lineWidth = 9;
+        ctx.beginPath();
+        ctx.moveTo(-18, -25);
+        ctx.lineTo(-35, -8 + run * 3);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(20, -22);
+        ctx.lineTo(34, -7 - run * 3);
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      function drawParticles() {
+        for (const p of particles) {
+          const alpha = clamp(p.life / p.maxLife, 0, 1);
+          ctx.save();
+          ctx.globalAlpha = alpha;
+          ctx.fillStyle = p.color;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size * alpha, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+
+      function drawHUD() {
+        ctx.save();
+
+        fillRoundedRect(16, 16, 152, 58, 17, "rgba(9,27,52,0.7)");
+        strokeRoundedRect(16, 16, 152, 58, 17, "rgba(255,255,255,0.25)", 1.5);
+
+        ctx.fillStyle = "rgba(225,242,255,0.8)";
+        ctx.font = "700 11px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText("DISTANCE", 31, 36);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "900 24px Arial";
+        ctx.fillText(`${Math.floor(distance)} m`, 30, 62);
+
+        fillRoundedRect(276, 17, 108, 56, 17, "rgba(9,27,52,0.7)");
+        strokeRoundedRect(276, 17, 108, 56, 17, "rgba(255,255,255,0.25)", 1.5);
+
+        drawMiniCoin(296, 45, 10);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "900 22px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText(Math.floor(score), 315, 53);
+
+        ctx.restore();
+      }
+
+      function drawMiniCoin(x, y, r) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.fillStyle = "#ffc928";
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "#fff3a0";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.fillStyle = "#eca70f";
+        ctx.fillRect(-2, -6, 4, 12);
+        ctx.restore();
+      }
+
+      function drawStartScreen() {
+        ctx.save();
+        ctx.fillStyle = "rgba(4,17,39,0.18)";
+        ctx.fillRect(0, 0, W, H);
+        ctx.textAlign = "center";
+
+        ctx.save();
+        ctx.translate(W / 2, 117);
+        ctx.rotate(-0.035);
+
+        ctx.lineWidth = 10;
+        ctx.strokeStyle = "rgba(4,27,54,0.85)";
+        ctx.font = "900 48px Arial";
+        ctx.strokeText("CITY", 0, 0);
+
+        const cityGradient = ctx.createLinearGradient(-80, -40, 80, 20);
+        cityGradient.addColorStop(0, "#ffe559");
+        cityGradient.addColorStop(1, "#ff9e32");
+        ctx.fillStyle = cityGradient;
+        ctx.fillText("CITY", 0, 0);
+
+        ctx.strokeStyle = "rgba(4,27,54,0.85)";
+        ctx.font = "900 54px Arial";
+        ctx.strokeText("RUSH", 0, 49);
+
+        const rushGradient = ctx.createLinearGradient(-90, 0, 90, 60);
+        rushGradient.addColorStop(0, "#45efff");
+        rushGradient.addColorStop(1, "#168bd5");
+        ctx.fillStyle = rushGradient;
+        ctx.fillText("RUSH", 0, 49);
+        ctx.restore();
+
+        fillRoundedRect(53, 520, 294, 116, 25, "rgba(6,24,50,0.82)");
+        strokeRoundedRect(53, 520, 294, 116, 25, "rgba(255,255,255,0.3)", 2);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "900 21px Arial";
+        ctx.fillText("TAP OR PRESS SPACE", W / 2, 550);
+
+        ctx.fillStyle = "#bdeaff";
+        ctx.font = "700 14px Arial";
+        ctx.fillText("Swipe left or right to change lanes", W / 2, 578);
+        ctx.fillText("Swipe up to jump • Swipe down to slide", W / 2, 601);
+
+        ctx.fillStyle = "#ffdb4f";
+        ctx.font = "900 12px Arial";
+        ctx.fillText(`BEST SCORE  ${bestScore}`, W / 2, 622);
+        ctx.restore();
+      }
+
+      function drawGameOver() {
+        ctx.save();
+        ctx.fillStyle = "rgba(3,11,25,0.64)";
+        ctx.fillRect(0, 0, W, H);
+
+        fillRoundedRect(38, 160, 324, 355, 30, "rgba(9,28,57,0.96)");
+        strokeRoundedRect(38, 160, 324, 355, 30, "rgba(255,255,255,0.24)", 2);
+
+        ctx.textAlign = "center";
+
+        ctx.fillStyle = "#ffca42";
+        ctx.font = "900 18px Arial";
+        ctx.fillText("RUN ENDED", W / 2, 205);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "900 42px Arial";
+        ctx.fillText(`${Math.floor(distance)} m`, W / 2, 260);
+
+        ctx.fillStyle = "#9fdcf7";
+        ctx.font = "700 13px Arial";
+        ctx.fillText("TOTAL DISTANCE", W / 2, 284);
+
+        ctx.fillStyle = "rgba(255,255,255,0.12)";
+        ctx.fillRect(74, 310, 252, 1);
+
+        drawMiniCoin(128, 354, 14);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "900 28px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText(Math.floor(score), 153, 363);
+
+        ctx.fillStyle = "#9fdcf7";
+        ctx.font = "700 12px Arial";
+        ctx.fillText("SCORE", 153, 382);
+
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#ffdc54";
+        ctx.font = "900 14px Arial";
+        ctx.fillText(`BEST  ${bestScore}`, W / 2, 422);
+
+        fillRoundedRect(80, 445, 240, 54, 18, "#ffb52b");
+        strokeRoundedRect(80, 445, 240, 54, 18, "#fff0a3", 2);
+
+        ctx.fillStyle = "#3d2810";
+        ctx.font = "900 19px Arial";
+        ctx.fillText("RUN AGAIN", W / 2, 480);
+        ctx.restore();
+      }
+
+      function render() {
+        ctx.save();
+
+        if (shake > 0.1) ctx.translate(random(-shake, shake), random(-shake, shake));
+
+        drawSky();
+        drawBuildings();
+        drawRoad();
+        drawRoadsideItems();
+        drawCoins();
+        drawObstacles();
+        drawPlayer();
+        drawParticles();
+
+        if (gameState === STATE.PLAYING) drawHUD();
+        else if (gameState === STATE.START) drawStartScreen();
+        else if (gameState === STATE.GAME_OVER) drawGameOver();
+
+        if (flash > 0) {
+          ctx.fillStyle = `rgba(255,255,255,${flash})`;
+          ctx.fillRect(0, 0, W, H);
+        }
+
+        ctx.restore();
+      }
+
+      function loop(now) {
+        const dt = Math.min(0.032, (now - lastTime) / 1000);
+        lastTime = now;
+        update(dt);
+        render();
+        requestAnimationFrame(loop);
+      }
+
+      function handleKeyDown(event) {
+        const code = event.code;
+
+        if (["ArrowLeft", "ArrowRight", "ArrowDown", "ArrowUp", "Space"].includes(code)) {
+          event.preventDefault();
+        }
+
+        if (event.repeat) return;
+
+        if (code === "ArrowLeft" || code === "KeyA") moveLane(-1);
+        else if (code === "ArrowRight" || code === "KeyD") moveLane(1);
+        else if (code === "ArrowUp" || code === "KeyW" || code === "Space") jump();
+        else if (code === "ArrowDown" || code === "KeyS") slide();
+        else if (code === "Enter") startGame();
+      }
+
+      function getPointerPosition(event) {
+        const rect = canvas.getBoundingClientRect();
+        const clientX =
+          event.touches?.[0]?.clientX ??
+          event.changedTouches?.[0]?.clientX ??
+          event.clientX;
+        const clientY =
+          event.touches?.[0]?.clientY ??
+          event.changedTouches?.[0]?.clientY ??
+          event.clientY;
+
+        return {
+          x: ((clientX - rect.left) / rect.width) * W,
+          y: ((clientY - rect.top) / rect.height) * H
+        };
+      }
+
+      function pointerStart(event) {
+        event.preventDefault();
+        const p = getPointerPosition(event);
+        touch.active = true;
+        touch.startX = p.x;
+        touch.startY = p.y;
+        touch.currentX = p.x;
+        touch.currentY = p.y;
+        touch.startTime = performance.now();
+      }
+
+      function pointerMove(event) {
+        if (!touch.active) return;
+        event.preventDefault();
+        const p = getPointerPosition(event);
+        touch.currentX = p.x;
+        touch.currentY = p.y;
+      }
+
+      function pointerEnd(event) {
+        if (!touch.active) return;
+        event.preventDefault();
+
+        const p = getPointerPosition(event);
+        touch.active = false;
+
+        const dx = p.x - touch.startX;
+        const dy = p.y - touch.startY;
+        const duration = performance.now() - touch.startTime;
+        const distanceMoved = Math.hypot(dx, dy);
+
+        if (gameState !== STATE.PLAYING) {
+          startGame();
+          return;
+        }
+
+        if (distanceMoved < 24 && duration < 330) {
+          jump();
+          return;
+        }
+
+        if (Math.abs(dx) > Math.abs(dy)) {
+          if (dx > 28) moveLane(1);
+          else if (dx < -28) moveLane(-1);
+        } else {
+          if (dy < -28) jump();
+          else if (dy > 28) slide();
+        }
+      }
+
+      function resizeDisplay() {
+        const maxW = window.innerWidth;
+        const maxH = window.innerHeight;
+        const aspect = W / H;
+
+        let cssW = maxW;
+        let cssH = cssW / aspect;
+
+        if (cssH > maxH) {
+          cssH = maxH;
+          cssW = cssH * aspect;
+        }
+
+        const shell = document.querySelector(".game-shell");
+        shell.style.width = `${cssW}px`;
+        shell.style.height = `${cssH}px`;
+      }
+
+      window.addEventListener("keydown", handleKeyDown, { passive: false });
+
+      canvas.addEventListener("mousedown", pointerStart, { passive: false });
+      canvas.addEventListener("mousemove", pointerMove, { passive: false });
+      window.addEventListener("mouseup", pointerEnd, { passive: false });
+
+      canvas.addEventListener("touchstart", pointerStart, { passive: false });
+      canvas.addEventListener("touchmove", pointerMove, { passive: false });
+      canvas.addEventListener("touchend", pointerEnd, { passive: false });
+
+      window.addEventListener("resize", resizeDisplay);
+
+      createWorld();
+      resizeDisplay();
+      requestAnimationFrame(loop);
+    })();
+  </script>
+</body>
+</html>

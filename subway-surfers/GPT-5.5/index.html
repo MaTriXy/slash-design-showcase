@@ -1,0 +1,1424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+  />
+  <title>City Rush Runner</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #10172a;
+      font-family: Arial, Helvetica, sans-serif;
+      touch-action: none;
+    }
+
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .game-shell {
+      position: relative;
+      width: min(100vw, 400px);
+      height: min(100vh, 700px);
+      overflow: hidden;
+      background: #6fd6ff;
+      box-shadow: 0 20px 80px rgba(0, 0, 0, 0.45);
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      image-rendering: auto;
+      touch-action: none;
+    }
+
+    .controls {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 16px;
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+      pointer-events: none;
+      opacity: 0.8;
+    }
+
+    .control-btn {
+      width: 58px;
+      height: 58px;
+      border: 1px solid rgba(255, 255, 255, 0.45);
+      border-radius: 18px;
+      color: white;
+      background: rgba(10, 20, 45, 0.32);
+      backdrop-filter: blur(8px);
+      font-size: 22px;
+      font-weight: 800;
+      display: grid;
+      place-items: center;
+      user-select: none;
+      pointer-events: auto;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .control-btn:active {
+      transform: scale(0.94);
+      background: rgba(10, 20, 45, 0.55);
+    }
+
+    @media (min-width: 700px) {
+      .controls {
+        opacity: 0.45;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="game-shell">
+    <canvas id="game" width="400" height="700"></canvas>
+
+    <div class="controls">
+      <button class="control-btn" id="leftBtn" aria-label="Move left">◀</button>
+      <button class="control-btn" id="jumpBtn" aria-label="Jump">▲</button>
+      <button class="control-btn" id="slideBtn" aria-label="Slide">▼</button>
+      <button class="control-btn" id="rightBtn" aria-label="Move right">▶</button>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+
+      const WIDTH = canvas.width;
+      const HEIGHT = canvas.height;
+
+      const leftBtn = document.getElementById("leftBtn");
+      const rightBtn = document.getElementById("rightBtn");
+      const jumpBtn = document.getElementById("jumpBtn");
+      const slideBtn = document.getElementById("slideBtn");
+
+      const lanes = [130, 200, 270];
+
+      let state = "start";
+      let lastTime = 0;
+      let elapsed = 0;
+      let worldOffset = 0;
+      let score = 0;
+      let coinsCollected = 0;
+      let speed = 310;
+      let spawnTimer = 0;
+      let coinTimer = 0;
+      let difficultyTimer = 0;
+      let flash = 0;
+      let shake = 0;
+      let touchStartX = 0;
+      let touchStartY = 0;
+      let pointerDown = false;
+
+      let obstacles = [];
+      let coins = [];
+      let particles = [];
+      let clouds = [];
+
+      const player = {
+        lane: 1,
+        x: lanes[1],
+        targetX: lanes[1],
+        groundY: 590,
+        y: 590,
+        width: 48,
+        height: 82,
+        baseHeight: 82,
+        vy: 0,
+        gravity: 1900,
+        jumpPower: -760,
+        jumping: false,
+        sliding: false,
+        slideTimer: 0,
+        runFrame: 0,
+        alive: true
+      };
+
+      function random(min, max) {
+        return Math.random() * (max - min) + min;
+      }
+
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+      }
+
+      const HORIZON_Y = 305;
+      const ROAD_BOTTOM_Y = HEIGHT + 95;
+
+      function perspectiveForZ(z) {
+        const visibleZ = clamp(z, 0, 1);
+        const curve = Math.pow(visibleZ, 1.62);
+        return {
+          y: HORIZON_Y + curve * (ROAD_BOTTOM_Y - HORIZON_Y),
+          scale: 0.14 + visibleZ * 0.86,
+          laneSpread: 0.22 + visibleZ * 0.78
+        };
+      }
+
+      function updatePerspectivePosition(item) {
+        const p = perspectiveForZ(item.z);
+        item.y = p.y;
+        item.scale = p.scale;
+        item.x = 200 + (lanes[item.lane] - 200) * p.laneSpread;
+      }
+
+      function roundedRect(x, y, w, h, radius) {
+        const r = Math.min(radius, w / 2, h / 2);
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+      }
+
+      function resetGame() {
+        score = 0;
+        coinsCollected = 0;
+        speed = 310;
+        spawnTimer = 0.75;
+        coinTimer = 0.25;
+        difficultyTimer = 0;
+        worldOffset = 0;
+        elapsed = 0;
+        flash = 0;
+        shake = 0;
+
+        obstacles = [];
+        coins = [];
+        particles = [];
+
+        player.lane = 1;
+        player.x = lanes[1];
+        player.targetX = lanes[1];
+        player.y = player.groundY;
+        player.height = player.baseHeight;
+        player.vy = 0;
+        player.jumping = false;
+        player.sliding = false;
+        player.slideTimer = 0;
+        player.alive = true;
+        player.runFrame = 0;
+
+        state = "playing";
+      }
+
+      function initializeClouds() {
+        clouds = Array.from({ length: 7 }, (_, i) => ({
+          x: random(-50, WIDTH),
+          y: random(35, 210),
+          size: random(28, 58),
+          speed: random(5, 16),
+          layer: i % 2
+        }));
+      }
+
+      function moveLeft() {
+        if (state === "start" || state === "gameover") {
+          resetGame();
+          return;
+        }
+
+        if (state !== "playing") return;
+
+        player.lane = clamp(player.lane - 1, 0, 2);
+        player.targetX = lanes[player.lane];
+      }
+
+      function moveRight() {
+        if (state === "start" || state === "gameover") {
+          resetGame();
+          return;
+        }
+
+        if (state !== "playing") return;
+
+        player.lane = clamp(player.lane + 1, 0, 2);
+        player.targetX = lanes[player.lane];
+      }
+
+      function jump() {
+        if (state === "start" || state === "gameover") {
+          resetGame();
+          return;
+        }
+
+        if (
+          state === "playing" &&
+          !player.jumping &&
+          !player.sliding
+        ) {
+          player.jumping = true;
+          player.vy = player.jumpPower;
+
+          for (let i = 0; i < 8; i++) {
+            particles.push({
+              x: player.x + random(-18, 18),
+              y: player.groundY + 5,
+              vx: random(-45, 45),
+              vy: random(-110, -25),
+              life: random(0.25, 0.55),
+              maxLife: 0.55,
+              size: random(3, 8),
+              color: "rgba(230,245,255,0.8)",
+              gravity: 240
+            });
+          }
+        }
+      }
+
+      function slide() {
+        if (state === "start" || state === "gameover") {
+          resetGame();
+          return;
+        }
+
+        if (
+          state === "playing" &&
+          !player.jumping &&
+          !player.sliding
+        ) {
+          player.sliding = true;
+          player.slideTimer = 0.58;
+          player.height = 48;
+          player.y = player.groundY + (player.baseHeight - player.height);
+        }
+      }
+
+      function createObstacle() {
+        const lane = Math.floor(Math.random() * 3);
+        const roll = Math.random();
+
+        let type = "barrier";
+
+        if (score > 400 && roll > 0.48) {
+          type = "train";
+        } else if (score > 160 && roll > 0.72) {
+          type = "sign";
+        }
+
+        const obstacle = {
+          lane,
+          x: 200,
+          y: HORIZON_Y,
+          z: 0,
+          scale: 0.14,
+          type,
+          passed: false
+        };
+
+        if (type === "barrier") {
+          obstacle.width = 72;
+          obstacle.height = 58;
+          obstacle.hitWidth = 56;
+          obstacle.hitHeight = 42;
+        } else if (type === "train") {
+          obstacle.width = 92;
+          obstacle.height = 188;
+          obstacle.hitWidth = 70;
+          obstacle.hitHeight = 170;
+        } else {
+          obstacle.width = 82;
+          obstacle.height = 105;
+          obstacle.hitWidth = 62;
+          obstacle.hitHeight = 30;
+        }
+
+        updatePerspectivePosition(obstacle);
+        obstacles.push(obstacle);
+
+        if (speed > 430 && Math.random() < 0.26) {
+          const available = [0, 1, 2].filter((index) => index !== lane);
+          const secondLane = available[Math.floor(Math.random() * available.length)];
+
+          const second = {
+            lane: secondLane,
+            x: 200,
+            y: HORIZON_Y,
+            z: -0.2,
+            scale: 0.14,
+            type: "barrier",
+            width: 72,
+            height: 58,
+            hitWidth: 56,
+            hitHeight: 42,
+            passed: false
+          };
+
+          updatePerspectivePosition(second);
+          obstacles.push(second);
+        }
+      }
+
+      function createCoinPattern() {
+        const lane = Math.floor(Math.random() * 3);
+        const pattern = Math.random();
+
+        if (pattern < 0.55) {
+          const count = Math.floor(random(3, 7));
+
+          for (let i = 0; i < count; i++) {
+            const coin = {
+              lane,
+              x: 200,
+              y: HORIZON_Y,
+              z: -i * 0.115,
+              scale: 0.14,
+              radius: 13,
+              spin: random(0, Math.PI * 2),
+              collected: false
+            };
+
+            updatePerspectivePosition(coin);
+            coins.push(coin);
+          }
+        } else {
+          const sequence = [0, 1, 2, 1, 0];
+
+          sequence.forEach((offset, i) => {
+            const selectedLane = (lane + offset) % 3;
+            const coin = {
+              lane: selectedLane,
+              x: 200,
+              y: HORIZON_Y,
+              z: -i * 0.115,
+              scale: 0.14,
+              radius: 13,
+              spin: random(0, Math.PI * 2),
+              collected: false
+            };
+
+            updatePerspectivePosition(coin);
+            coins.push(coin);
+          });
+        }
+      }
+
+      function update(dt) {
+        elapsed += dt;
+
+        clouds.forEach((cloud) => {
+          cloud.x -= cloud.speed * dt;
+
+          if (cloud.x < -cloud.size * 2) {
+            cloud.x = WIDTH + cloud.size;
+            cloud.y = random(35, 210);
+          }
+        });
+
+        particles.forEach((particle) => {
+          particle.life -= dt;
+          particle.x += particle.vx * dt;
+          particle.y += particle.vy * dt;
+          particle.vy += particle.gravity * dt;
+        });
+
+        particles = particles.filter((particle) => particle.life > 0);
+
+        if (flash > 0) flash -= dt;
+        if (shake > 0) shake -= dt;
+
+        if (state !== "playing") return;
+
+        worldOffset += speed * dt;
+        score += speed * dt * 0.025;
+        difficultyTimer += dt;
+
+        if (difficultyTimer >= 4) {
+          difficultyTimer = 0;
+          speed = Math.min(590, speed + 9);
+        }
+
+        player.x += (player.targetX - player.x) * Math.min(1, dt * 14);
+        player.runFrame += dt * 11;
+
+        if (player.jumping) {
+          player.vy += player.gravity * dt;
+          player.y += player.vy * dt;
+
+          if (player.y >= player.groundY) {
+            player.y = player.groundY;
+            player.vy = 0;
+            player.jumping = false;
+
+            for (let i = 0; i < 6; i++) {
+              particles.push({
+                x: player.x + random(-19, 19),
+                y: player.groundY + 6,
+                vx: random(-60, 60),
+                vy: random(-70, -15),
+                life: random(0.18, 0.4),
+                maxLife: 0.4,
+                size: random(3, 7),
+                color: "rgba(220,240,255,0.75)",
+                gravity: 260
+              });
+            }
+          }
+        }
+
+        if (player.sliding) {
+          player.slideTimer -= dt;
+
+          if (player.slideTimer <= 0) {
+            player.sliding = false;
+            player.height = player.baseHeight;
+            player.y = player.groundY;
+          }
+        }
+
+        spawnTimer -= dt;
+
+        if (spawnTimer <= 0) {
+          createObstacle();
+          const baseInterval = Math.max(0.72, 1.38 - speed / 950);
+          spawnTimer = random(baseInterval, baseInterval + 0.48);
+        }
+
+        coinTimer -= dt;
+
+        if (coinTimer <= 0) {
+          createCoinPattern();
+          coinTimer = random(1.25, 2.15);
+        }
+
+        const depthSpeed = speed / 620;
+
+        obstacles.forEach((obstacle) => {
+          obstacle.z += depthSpeed * dt;
+          updatePerspectivePosition(obstacle);
+
+          if (!obstacle.passed && obstacle.z > 0.93) {
+            obstacle.passed = true;
+            score += 18;
+          }
+
+          if (obstacle.z >= 0) {
+            checkObstacleCollision(obstacle);
+          }
+        });
+
+        coins.forEach((coin) => {
+          coin.z += depthSpeed * dt;
+          updatePerspectivePosition(coin);
+          coin.spin += dt * 9;
+
+          if (coin.z >= 0) {
+            checkCoinCollision(coin);
+          }
+        });
+
+        obstacles = obstacles.filter((obstacle) => obstacle.z < 1.17);
+        coins = coins.filter((coin) => coin.z < 1.1 && !coin.collected);
+      }
+
+      function checkObstacleCollision(obstacle) {
+        if (!player.alive || obstacle.z < 0.58 || obstacle.z > 0.96) return;
+
+        const scale = obstacle.scale || 1;
+        const playerLeft = player.x - player.width * 0.34;
+        const playerRight = player.x + player.width * 0.34;
+        const playerTop = player.y - player.height;
+        const playerBottom = player.y;
+
+        let obstacleTop;
+        let obstacleBottom;
+
+        if (obstacle.type === "sign") {
+          obstacleTop = obstacle.y - obstacle.height * scale;
+          obstacleBottom = obstacleTop + obstacle.hitHeight * scale;
+
+          const horizontalOverlap =
+            playerRight > obstacle.x - (obstacle.hitWidth * scale) / 2 &&
+            playerLeft < obstacle.x + (obstacle.hitWidth * scale) / 2;
+
+          const verticalOverlap =
+            playerBottom > obstacleTop &&
+            playerTop < obstacleBottom;
+
+          if (horizontalOverlap && verticalOverlap && !player.sliding) {
+            gameOver();
+          }
+
+          return;
+        }
+
+        obstacleTop = obstacle.y - obstacle.hitHeight * scale;
+        obstacleBottom = obstacle.y;
+
+        const horizontalOverlap =
+          playerRight > obstacle.x - (obstacle.hitWidth * scale) / 2 &&
+          playerLeft < obstacle.x + (obstacle.hitWidth * scale) / 2;
+
+        const verticalOverlap =
+          playerBottom > obstacleTop + 5 &&
+          playerTop < obstacleBottom - 3;
+
+        if (horizontalOverlap && verticalOverlap) {
+          gameOver();
+        }
+      }
+
+      function checkCoinCollision(coin) {
+        if (coin.collected) return;
+
+        const playerCenterY = player.y - player.height * 0.55;
+        const dx = player.x - coin.x;
+        const dy = playerCenterY - coin.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (coin.z > 0.55 && coin.z < 1.02 && distance < 28 + 14 * coin.scale) {
+          coin.collected = true;
+          coinsCollected++;
+          score += 40;
+          flash = 0.08;
+
+          for (let i = 0; i < 12; i++) {
+            const angle = (Math.PI * 2 * i) / 12;
+
+            particles.push({
+              x: coin.x,
+              y: coin.y,
+              vx: Math.cos(angle) * random(45, 130),
+              vy: Math.sin(angle) * random(45, 130),
+              life: random(0.25, 0.55),
+              maxLife: 0.55,
+              size: random(2, 5),
+              color: "rgba(255,220,60,1)",
+              gravity: 100
+            });
+          }
+        }
+      }
+
+      function gameOver() {
+        player.alive = false;
+        state = "gameover";
+        shake = 0.45;
+        flash = 0.18;
+
+        for (let i = 0; i < 28; i++) {
+          particles.push({
+            x: player.x + random(-18, 18),
+            y: player.y - random(10, 65),
+            vx: random(-180, 180),
+            vy: random(-220, 60),
+            life: random(0.5, 1),
+            maxLife: 1,
+            size: random(3, 9),
+            color:
+              Math.random() > 0.5
+                ? "rgba(255,183,45,1)"
+                : "rgba(255,75,75,1)",
+            gravity: 420
+          });
+        }
+      }
+
+      function draw() {
+        ctx.save();
+
+        if (shake > 0) {
+          const power = shake * 11;
+          ctx.translate(random(-power, power), random(-power, power));
+        }
+
+        drawSky();
+        drawCity();
+        drawRoad();
+        drawRoadDetails();
+
+        coins.forEach(drawCoin);
+        obstacles.forEach(drawObstacle);
+        drawPlayer();
+        drawParticles();
+        drawHUD();
+
+        if (state === "start") drawStartScreen();
+        if (state === "gameover") drawGameOver();
+
+        if (flash > 0) {
+          ctx.fillStyle = `rgba(255,255,255,${flash * 2.8})`;
+          ctx.fillRect(0, 0, WIDTH, HEIGHT);
+        }
+
+        ctx.restore();
+      }
+
+      function drawSky() {
+        const gradient = ctx.createLinearGradient(0, 0, 0, 420);
+        gradient.addColorStop(0, "#50c8ff");
+        gradient.addColorStop(0.62, "#a9e9ff");
+        gradient.addColorStop(1, "#f5d28c");
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+        ctx.fillStyle = "rgba(255,236,160,0.8)";
+        ctx.beginPath();
+        ctx.arc(326, 95, 43, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "rgba(255,255,255,0.22)";
+        ctx.beginPath();
+        ctx.arc(326, 95, 62, 0, Math.PI * 2);
+        ctx.fill();
+
+        clouds.forEach((cloud) => {
+          ctx.save();
+          ctx.globalAlpha = cloud.layer ? 0.72 : 0.92;
+          ctx.fillStyle = "#ffffff";
+
+          ctx.beginPath();
+          ctx.arc(cloud.x, cloud.y, cloud.size * 0.45, 0, Math.PI * 2);
+          ctx.arc(
+            cloud.x + cloud.size * 0.45,
+            cloud.y - cloud.size * 0.12,
+            cloud.size * 0.34,
+            0,
+            Math.PI * 2
+          );
+          ctx.arc(
+            cloud.x + cloud.size * 0.78,
+            cloud.y,
+            cloud.size * 0.42,
+            0,
+            Math.PI * 2
+          );
+          ctx.fill();
+
+          ctx.restore();
+        });
+      }
+
+      function drawCity() {
+        const cityShift = (worldOffset * 0.05) % 120;
+
+        for (let i = -2; i < 7; i++) {
+          const x = i * 82 - cityShift;
+          const h = 85 + ((i * 47 + 160) % 110);
+          const y = 302 - h;
+
+          ctx.fillStyle = i % 2 === 0 ? "#5e74a4" : "#6f83ae";
+          ctx.fillRect(x, y, 67, h);
+
+          ctx.fillStyle = "rgba(255,236,145,0.65)";
+
+          for (let row = 0; row < 5; row++) {
+            for (let col = 0; col < 3; col++) {
+              if ((row + col + i) % 2 === 0) {
+                ctx.fillRect(
+                  x + 10 + col * 18,
+                  y + 15 + row * 19,
+                  8,
+                  10
+                );
+              }
+            }
+          }
+
+          ctx.fillStyle = "#4d638e";
+          ctx.fillRect(x + 23, y - 13, 20, 13);
+        }
+
+        const treeShift = (worldOffset * 0.19) % 94;
+
+        for (let i = -2; i < 7; i++) {
+          const x = i * 94 - treeShift;
+
+          ctx.fillStyle = "#486742";
+          ctx.fillRect(x + 31, 278, 9, 42);
+
+          ctx.fillStyle = i % 2 ? "#46a95f" : "#3d9a59";
+          ctx.beginPath();
+          ctx.arc(x + 35, 275, 25, 0, Math.PI * 2);
+          ctx.arc(x + 18, 287, 17, 0, Math.PI * 2);
+          ctx.arc(x + 52, 288, 18, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        ctx.fillStyle = "#7dbe6c";
+        ctx.fillRect(0, 308, WIDTH, HEIGHT - 308);
+      }
+
+      function drawRoad() {
+        ctx.fillStyle = "#e4ded0";
+        ctx.beginPath();
+        ctx.moveTo(72, HEIGHT);
+        ctx.lineTo(105, 305);
+        ctx.lineTo(295, 305);
+        ctx.lineTo(328, HEIGHT);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = "#2f3444";
+        ctx.beginPath();
+        ctx.moveTo(87, HEIGHT);
+        ctx.lineTo(115, 305);
+        ctx.lineTo(285, 305);
+        ctx.lineTo(313, HEIGHT);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.strokeStyle = "#f4f5f9";
+        ctx.lineWidth = 5;
+
+        ctx.beginPath();
+        ctx.moveTo(87, HEIGHT);
+        ctx.lineTo(115, 305);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(313, HEIGHT);
+        ctx.lineTo(285, 305);
+        ctx.stroke();
+
+        ctx.strokeStyle = "#ffd64f";
+        ctx.lineWidth = 3;
+
+        ctx.beginPath();
+        ctx.moveTo(78, HEIGHT);
+        ctx.lineTo(108, 305);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(322, HEIGHT);
+        ctx.lineTo(292, 305);
+        ctx.stroke();
+      }
+
+      function drawRoadDetails() {
+        const stripeOffset = worldOffset % 105;
+
+        for (let i = -2; i < 10; i++) {
+          const y = 310 + i * 105 + stripeOffset;
+          const perspective = clamp((y - 305) / 395, 0, 1);
+          const halfWidth = 4 + perspective * 6;
+          const stripeHeight = 21 + perspective * 31;
+
+          if (y > 300 && y < HEIGHT + 80) {
+            ctx.fillStyle = "rgba(255,255,255,0.92)";
+
+            for (const laneDivider of [165, 235]) {
+              const centerOffset = laneDivider - 200;
+              const x = 200 + centerOffset * (0.54 + perspective * 0.46);
+
+              ctx.beginPath();
+              ctx.moveTo(x - halfWidth, y);
+              ctx.lineTo(x + halfWidth, y);
+              ctx.lineTo(x + halfWidth + 2, y + stripeHeight);
+              ctx.lineTo(x - halfWidth - 2, y + stripeHeight);
+              ctx.closePath();
+              ctx.fill();
+            }
+          }
+        }
+
+        const sideOffset = worldOffset % 50;
+
+        for (let i = -2; i < 17; i++) {
+          const y = 315 + i * 50 + sideOffset;
+          const p = clamp((y - 305) / 395, 0, 1);
+          const roadLeft = 115 - p * 28;
+          const roadRight = 285 + p * 28;
+
+          ctx.fillStyle = i % 2 === 0 ? "#ffffff" : "#ff4f57";
+          ctx.fillRect(roadLeft - 15, y, 12 + p * 5, 25);
+          ctx.fillRect(roadRight + 3, y, 12 + p * 5, 25);
+        }
+      }
+
+      function drawCoin(coin) {
+        if (coin.z < 0 || coin.z > 1.08) return;
+
+        const scaleX = Math.max(0.18, Math.abs(Math.cos(coin.spin)));
+
+        ctx.save();
+        ctx.translate(coin.x, coin.y);
+        ctx.scale(coin.scale, coin.scale);
+
+        const glow = ctx.createRadialGradient(0, 0, 2, 0, 0, 28);
+        glow.addColorStop(0, "rgba(255,248,160,0.95)");
+        glow.addColorStop(0.45, "rgba(255,205,35,0.5)");
+        glow.addColorStop(1, "rgba(255,190,20,0)");
+
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(0, 0, 28, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.scale(scaleX, 1);
+
+        ctx.fillStyle = "#ffc928";
+        ctx.beginPath();
+        ctx.arc(0, 0, coin.radius, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = "#fff08a";
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        ctx.fillStyle = "#eaa315";
+        ctx.font = "bold 15px Arial";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("★", 0, 1);
+
+        ctx.restore();
+      }
+
+      function drawObstacle(obstacle) {
+        if (obstacle.z < 0 || obstacle.z > 1.12) return;
+
+        ctx.save();
+        ctx.translate(obstacle.x, obstacle.y);
+        ctx.scale(obstacle.scale, obstacle.scale);
+
+        if (obstacle.type === "barrier") {
+          ctx.fillStyle = "rgba(0,0,0,0.2)";
+          ctx.beginPath();
+          ctx.ellipse(0, 9, 40, 11, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = "#f3f0e8";
+          roundedRect(-36, -51, 72, 47, 8);
+          ctx.fill();
+
+          ctx.save();
+          roundedRect(-36, -51, 72, 47, 8);
+          ctx.clip();
+
+          ctx.strokeStyle = "#ff4e55";
+          ctx.lineWidth = 13;
+
+          for (let x = -54; x < 55; x += 28) {
+            ctx.beginPath();
+            ctx.moveTo(x, -1);
+            ctx.lineTo(x + 34, -55);
+            ctx.stroke();
+          }
+
+          ctx.restore();
+
+          ctx.fillStyle = "#474f61";
+          ctx.fillRect(-26, -4, 8, 22);
+          ctx.fillRect(18, -4, 8, 22);
+
+          ctx.fillStyle = "#f9b52e";
+          ctx.beginPath();
+          ctx.arc(-30, -57, 5, 0, Math.PI * 2);
+          ctx.arc(30, -57, 5, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (obstacle.type === "train") {
+          ctx.fillStyle = "rgba(0,0,0,0.22)";
+          ctx.beginPath();
+          ctx.ellipse(0, 10, 48, 14, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          const trainGradient = ctx.createLinearGradient(-46, 0, 46, 0);
+          trainGradient.addColorStop(0, "#e8424c");
+          trainGradient.addColorStop(0.5, "#ff6570");
+          trainGradient.addColorStop(1, "#ca303e");
+
+          ctx.fillStyle = trainGradient;
+          roundedRect(-46, -184, 92, 184, 18);
+          ctx.fill();
+
+          ctx.fillStyle = "#27364d";
+          roundedRect(-33, -163, 66, 51, 10);
+          ctx.fill();
+
+          ctx.fillStyle = "#93e5ff";
+          roundedRect(-27, -156, 23, 35, 5);
+          ctx.fill();
+          roundedRect(4, -156, 23, 35, 5);
+          ctx.fill();
+
+          ctx.fillStyle = "#ffe06c";
+          ctx.beginPath();
+          ctx.arc(-26, -24, 7, 0, Math.PI * 2);
+          ctx.arc(26, -24, 7, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = "#30394c";
+          ctx.fillRect(-48, -94, 96, 8);
+
+          ctx.fillStyle = "#f8f7f1";
+          ctx.font = "bold 15px Arial";
+          ctx.textAlign = "center";
+          ctx.fillText("CITY", 0, -75);
+
+          ctx.fillStyle = "#222938";
+          ctx.fillRect(-34, -8, 19, 11);
+          ctx.fillRect(15, -8, 19, 11);
+        } else {
+          ctx.fillStyle = "rgba(0,0,0,0.18)";
+          ctx.beginPath();
+          ctx.ellipse(0, 9, 44, 11, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = "#4d5d72";
+          ctx.fillRect(-35, -11, 9, 20);
+          ctx.fillRect(26, -11, 9, 20);
+
+          ctx.fillStyle = "#f0f5ff";
+          roundedRect(-41, -102, 82, 36, 7);
+          ctx.fill();
+
+          ctx.fillStyle = "#1f8fe5";
+          roundedRect(-36, -97, 72, 26, 5);
+          ctx.fill();
+
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "bold 13px Arial";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText("DUCK!", 0, -84);
+        }
+
+        ctx.restore();
+      }
+
+      function drawPlayer() {
+        const run = Math.sin(player.runFrame);
+        const bounce = player.jumping ? 0 : Math.abs(run) * 3;
+        const y = player.y - bounce;
+
+        ctx.save();
+        ctx.translate(player.x, y);
+
+        if (!player.jumping) {
+          ctx.fillStyle = "rgba(0,0,0,0.24)";
+          ctx.beginPath();
+          ctx.ellipse(0, 10, player.sliding ? 31 : 22, 8, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        if (player.sliding) {
+          ctx.rotate(-0.13);
+
+          ctx.fillStyle = "#2751a8";
+          roundedRect(-28, -34, 57, 27, 12);
+          ctx.fill();
+
+          ctx.fillStyle = "#ffb07a";
+          ctx.beginPath();
+          ctx.arc(20, -32, 13, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = "#17223e";
+          ctx.beginPath();
+          ctx.arc(18, -37, 13, Math.PI, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = "#f7ca35";
+          roundedRect(-25, -23, 30, 18, 7);
+          ctx.fill();
+
+          ctx.fillStyle = "#f2f5ff";
+          roundedRect(-32, -15, 25, 8, 4);
+          ctx.fill();
+
+          ctx.restore();
+          return;
+        }
+
+        const legSwing = player.jumping ? 0 : run * 8;
+        const armSwing = player.jumping ? -5 : -run * 7;
+
+        ctx.strokeStyle = "#263450";
+        ctx.lineWidth = 9;
+        ctx.lineCap = "round";
+
+        ctx.beginPath();
+        ctx.moveTo(-7, -28);
+        ctx.lineTo(-10 - legSwing, 0);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(7, -28);
+        ctx.lineTo(10 + legSwing, 0);
+        ctx.stroke();
+
+        ctx.strokeStyle = "#f4f6ff";
+        ctx.lineWidth = 11;
+
+        ctx.beginPath();
+        ctx.moveTo(-10 - legSwing, 0);
+        ctx.lineTo(-16 - legSwing, 4);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(10 + legSwing, 0);
+        ctx.lineTo(17 + legSwing, 4);
+        ctx.stroke();
+
+        const shirtGradient = ctx.createLinearGradient(-24, -69, 24, -28);
+        shirtGradient.addColorStop(0, "#2c63d6");
+        shirtGradient.addColorStop(1, "#46a8ff");
+
+        ctx.fillStyle = shirtGradient;
+        roundedRect(-23, -70, 46, 44, 14);
+        ctx.fill();
+
+        ctx.fillStyle = "#f7ca35";
+        roundedRect(-18, -61, 36, 19, 7);
+        ctx.fill();
+
+        ctx.fillStyle = "#172746";
+        ctx.font = "bold 12px Arial";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("RUSH", 0, -51);
+
+        ctx.strokeStyle = "#ffad78";
+        ctx.lineWidth = 8;
+
+        ctx.beginPath();
+        ctx.moveTo(-18, -59);
+        ctx.lineTo(-29 + armSwing, -34);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(18, -59);
+        ctx.lineTo(29 - armSwing, -35);
+        ctx.stroke();
+
+        ctx.fillStyle = "#ffb07a";
+        ctx.beginPath();
+        ctx.arc(0, -84, 18, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#18243e";
+        ctx.beginPath();
+        ctx.arc(0, -90, 18, Math.PI, Math.PI * 2);
+        ctx.lineTo(16, -83);
+        ctx.quadraticCurveTo(9, -94, 0, -91);
+        ctx.quadraticCurveTo(-10, -95, -17, -82);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(-6, -84, 3, 0, Math.PI * 2);
+        ctx.arc(6, -84, 3, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#27314a";
+        ctx.beginPath();
+        ctx.arc(-6, -84, 1.5, 0, Math.PI * 2);
+        ctx.arc(6, -84, 1.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = "#bc654c";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(0, -77, 6, 0.15, Math.PI - 0.15);
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      function drawParticles() {
+        particles.forEach((particle) => {
+          ctx.save();
+          ctx.globalAlpha = clamp(
+            particle.life / particle.maxLife,
+            0,
+            1
+          );
+          ctx.fillStyle = particle.color;
+          ctx.beginPath();
+          ctx.arc(
+            particle.x,
+            particle.y,
+            particle.size,
+            0,
+            Math.PI * 2
+          );
+          ctx.fill();
+          ctx.restore();
+        });
+      }
+
+      function drawHUD() {
+        if (state === "start") return;
+
+        ctx.save();
+
+        ctx.fillStyle = "rgba(18,31,58,0.72)";
+        roundedRect(14, 14, 150, 58, 18);
+        ctx.fill();
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "700 13px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText("DISTANCE", 29, 35);
+
+        ctx.font = "900 25px Arial";
+        ctx.fillText(Math.floor(score).toString().padStart(5, "0"), 29, 61);
+
+        ctx.fillStyle = "rgba(18,31,58,0.72)";
+        roundedRect(274, 14, 112, 58, 18);
+        ctx.fill();
+
+        ctx.fillStyle = "#ffc928";
+        ctx.beginPath();
+        ctx.arc(298, 43, 13, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#e59c13";
+        ctx.font = "bold 13px Arial";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("★", 298, 44);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "900 23px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText(coinsCollected.toString(), 320, 51);
+
+        ctx.restore();
+      }
+
+      function drawStartScreen() {
+        ctx.fillStyle = "rgba(16,27,54,0.2)";
+        ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+        ctx.fillStyle = "rgba(11,22,49,0.86)";
+        roundedRect(30, 120, 340, 405, 32);
+        ctx.fill();
+
+        ctx.fillStyle = "#ffffff";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+
+        ctx.font = "900 49px Arial";
+        ctx.fillText("CITY", WIDTH / 2, 183);
+
+        ctx.fillStyle = "#ffd23f";
+        ctx.font = "900 63px Arial";
+        ctx.fillText("RUSH", WIDTH / 2, 239);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "700 17px Arial";
+        ctx.fillText("RUN • JUMP • DODGE", WIDTH / 2, 283);
+
+        drawInstructionIcon(98, 343, "↔", "MOVE");
+        drawInstructionIcon(200, 343, "↑", "JUMP");
+        drawInstructionIcon(302, 343, "↓", "SLIDE");
+
+        const pulse = 1 + Math.sin(elapsed * 4) * 0.035;
+
+        ctx.save();
+        ctx.translate(WIDTH / 2, 450);
+        ctx.scale(pulse, pulse);
+
+        const buttonGradient = ctx.createLinearGradient(-125, 0, 125, 0);
+        buttonGradient.addColorStop(0, "#ffb52d");
+        buttonGradient.addColorStop(1, "#ffdf4f");
+
+        ctx.fillStyle = buttonGradient;
+        roundedRect(-125, -30, 250, 60, 20);
+        ctx.fill();
+
+        ctx.fillStyle = "#172746";
+        ctx.font = "900 19px Arial";
+        ctx.fillText("TAP OR PRESS SPACE", 0, 1);
+
+        ctx.restore();
+
+        ctx.fillStyle = "rgba(255,255,255,0.72)";
+        ctx.font = "600 13px Arial";
+        ctx.fillText("Swipe on mobile or use arrow keys", WIDTH / 2, 500);
+      }
+
+      function drawInstructionIcon(x, y, symbol, label) {
+        ctx.fillStyle = "rgba(255,255,255,0.12)";
+        roundedRect(x - 37, y - 37, 74, 74, 21);
+        ctx.fill();
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "900 31px Arial";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(symbol, x, y - 5);
+
+        ctx.fillStyle = "rgba(255,255,255,0.76)";
+        ctx.font = "700 11px Arial";
+        ctx.fillText(label, x, y + 24);
+      }
+
+      function drawGameOver() {
+        ctx.fillStyle = "rgba(10,17,36,0.62)";
+        ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+        ctx.fillStyle = "rgba(18,31,58,0.94)";
+        roundedRect(35, 135, 330, 395, 30);
+        ctx.fill();
+
+        ctx.fillStyle = "#ff5b67";
+        ctx.font = "900 45px Arial";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("GAME OVER", WIDTH / 2, 199);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "700 15px Arial";
+        ctx.fillText("FINAL DISTANCE", WIDTH / 2, 255);
+
+        ctx.fillStyle = "#ffd23f";
+        ctx.font = "900 53px Arial";
+        ctx.fillText(Math.floor(score).toString(), WIDTH / 2, 304);
+
+        ctx.fillStyle = "rgba(255,255,255,0.12)";
+        roundedRect(86, 346, 228, 57, 18);
+        ctx.fill();
+
+        ctx.fillStyle = "#ffc928";
+        ctx.beginPath();
+        ctx.arc(131, 375, 14, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#e69d12";
+        ctx.font = "bold 13px Arial";
+        ctx.fillText("★", 131, 376);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "800 18px Arial";
+        ctx.fillText(`${coinsCollected} COINS`, 213, 376);
+
+        const pulse = 1 + Math.sin(elapsed * 4) * 0.035;
+
+        ctx.save();
+        ctx.translate(WIDTH / 2, 459);
+        ctx.scale(pulse, pulse);
+
+        const buttonGradient = ctx.createLinearGradient(-115, 0, 115, 0);
+        buttonGradient.addColorStop(0, "#2f8eff");
+        buttonGradient.addColorStop(1, "#4fd6ff");
+
+        ctx.fillStyle = buttonGradient;
+        roundedRect(-115, -29, 230, 58, 19);
+        ctx.fill();
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "900 20px Arial";
+        ctx.fillText("RUN AGAIN", 0, 1);
+
+        ctx.restore();
+
+        ctx.fillStyle = "rgba(255,255,255,0.68)";
+        ctx.font = "600 12px Arial";
+        ctx.fillText("Tap or press Space to restart", WIDTH / 2, 504);
+      }
+
+      function loop(timestamp) {
+        const dt = Math.min(0.033, (timestamp - lastTime) / 1000 || 0);
+        lastTime = timestamp;
+
+        update(dt);
+        draw();
+
+        requestAnimationFrame(loop);
+      }
+
+      window.addEventListener("keydown", (event) => {
+        const key = event.key.toLowerCase();
+
+        if (
+          ["arrowleft", "arrowright", "arrowup", "arrowdown", " "].includes(key)
+        ) {
+          event.preventDefault();
+        }
+
+        if (key === "arrowleft" || key === "a") moveLeft();
+        else if (key === "arrowright" || key === "d") moveRight();
+        else if (key === "arrowup" || key === "w" || key === " ") jump();
+        else if (key === "arrowdown" || key === "s") slide();
+      });
+
+      function bindButton(button, action) {
+        button.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          action();
+        });
+      }
+
+      bindButton(leftBtn, moveLeft);
+      bindButton(rightBtn, moveRight);
+      bindButton(jumpBtn, jump);
+      bindButton(slideBtn, slide);
+
+      canvas.addEventListener("pointerdown", (event) => {
+        pointerDown = true;
+        touchStartX = event.clientX;
+        touchStartY = event.clientY;
+
+        if (state === "start" || state === "gameover") {
+          resetGame();
+        }
+      });
+
+      canvas.addEventListener("pointerup", (event) => {
+        if (!pointerDown || state !== "playing") {
+          pointerDown = false;
+          return;
+        }
+
+        pointerDown = false;
+
+        const dx = event.clientX - touchStartX;
+        const dy = event.clientY - touchStartY;
+        const absX = Math.abs(dx);
+        const absY = Math.abs(dy);
+        const threshold = 28;
+
+        if (Math.max(absX, absY) < threshold) {
+          jump();
+          return;
+        }
+
+        if (absX > absY) {
+          if (dx > 0) moveRight();
+          else moveLeft();
+        } else {
+          if (dy < 0) jump();
+          else slide();
+        }
+      });
+
+      canvas.addEventListener("pointercancel", () => {
+        pointerDown = false;
+      });
+
+      initializeClouds();
+      requestAnimationFrame(loop);
+    })();
+  </script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 # Space Shooter: one prompt, three models
 
-> ### 🚀 Try this benchmark yourself — with Command Code
+> ### Try this benchmark yourself — with Command Code
 > This benchmark was built in one-shot with [`/design`](https://commandcode.ai/docs/slash-commands/design) in [Command Code](https://commandcode.ai).
 >
 > **How to run this exact benchmark:**

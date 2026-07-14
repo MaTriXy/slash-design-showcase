@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Neon Snake</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #05050a;
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 80% 60% at 50% 40%, rgba(0, 255, 200, 0.06) 0%, transparent 55%),
+      radial-gradient(ellipse 50% 40% at 70% 70%, rgba(120, 80, 255, 0.05) 0%, transparent 50%),
+      #05050a;
+    pointer-events: none;
+  }
+  .wrap {
+    position: relative;
+    width: 600px;
+    height: 600px;
+  }
+  canvas {
+    display: block;
+    width: 600px;
+    height: 600px;
+    border-radius: 12px;
+    box-shadow:
+      0 0 0 1px rgba(0, 255, 200, 0.15),
+      0 0 40px rgba(0, 255, 200, 0.08),
+      0 20px 60px rgba(0, 0, 0, 0.6);
+    background: #0a0a12;
+  }
+  .hud {
+    position: absolute;
+    top: 16px;
+    left: 0;
+    right: 0;
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .score {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: rgba(0, 255, 220, 0.9);
+    text-shadow: 0 0 12px rgba(0, 255, 220, 0.6), 0 0 24px rgba(0, 255, 220, 0.3);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+  }
+  .score.visible { opacity: 1; }
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(5, 5, 12, 0.82);
+    backdrop-filter: blur(6px);
+    border-radius: 12px;
+    z-index: 3;
+    transition: opacity 0.35s ease, visibility 0.35s ease;
+  }
+  .overlay.hidden {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+  .overlay h1 {
+    font-size: 52px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    background: linear-gradient(135deg, #00ffd0, #7b5cff, #00e5ff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    filter: drop-shadow(0 0 20px rgba(0, 255, 200, 0.4));
+    margin-bottom: 12px;
+  }
+  .overlay .subtitle {
+    font-size: 14px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: rgba(180, 200, 220, 0.55);
+    margin-bottom: 36px;
+  }
+  .overlay .final-score {
+    font-size: 22px;
+    color: rgba(0, 255, 220, 0.95);
+    text-shadow: 0 0 16px rgba(0, 255, 220, 0.5);
+    margin-bottom: 8px;
+    letter-spacing: 0.08em;
+  }
+  .overlay .final-score span {
+    font-weight: 700;
+    font-size: 28px;
+  }
+  .overlay .hint {
+    font-size: 13px;
+    color: rgba(160, 180, 200, 0.45);
+    margin-top: 20px;
+    letter-spacing: 0.06em;
+  }
+  .btn {
+    appearance: none;
+    border: 1px solid rgba(0, 255, 200, 0.45);
+    background: linear-gradient(135deg, rgba(0, 255, 200, 0.12), rgba(120, 90, 255, 0.15));
+    color: #e8fff9;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    padding: 14px 36px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    box-shadow: 0 0 20px rgba(0, 255, 200, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  }
+  .btn:hover {
+    transform: translateY(-2px);
+    border-color: rgba(0, 255, 220, 0.8);
+    box-shadow: 0 0 32px rgba(0, 255, 200, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  }
+  .btn:active { transform: translateY(0); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <canvas id="game" width="600" height="600"></canvas>
+  <div class="hud"><div class="score" id="scoreEl">Score: 0</div></div>
+  <div class="overlay" id="startScreen">
+    <h1>Snake</h1>
+    <p class="subtitle">Neon Edition</p>
+    <button class="btn" id="startBtn">Start Game</button>
+    <p class="hint">Arrow keys to move · Avoid walls &amp; yourself</p>
+  </div>
+  <div class="overlay hidden" id="gameOverScreen">
+    <h1>Game Over</h1>
+    <p class="final-score">Score: <span id="finalScore">0</span></p>
+    <button class="btn" id="restartBtn" style="margin-top: 28px;">Play Again</button>
+  </div>
+</div>
+<script>
+(function () {
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+  const scoreEl = document.getElementById("scoreEl");
+  const startScreen = document.getElementById("startScreen");
+  const gameOverScreen = document.getElementById("gameOverScreen");
+  const finalScoreEl = document.getElementById("finalScore");
+  const startBtn = document.getElementById("startBtn");
+  const restartBtn = document.getElementById("restartBtn");
+
+  // Classic grid snake: 20x20 board on 600px canvas
+  const GRID = 20;
+  const CELL = 600 / GRID; // 30px
+  const STEP_MS = 110; // time between grid steps (lower = faster)
+  const TRAIL_MAX = 36;
+
+  const DIR = {
+    ArrowUp:    { x: 0,  y: -1 },
+    ArrowDown:  { x: 0,  y: 1 },
+    ArrowLeft:  { x: -1, y: 0 },
+    ArrowRight: { x: 1,  y: 0 },
+  };
+
+  let state = "start"; // start | playing | gameover
+  let score = 0;
+  let snake = [];       // array of {x,y} grid cells, index 0 = head
+  let prevSnake = [];   // previous grid positions for smooth lerp
+  let dir = { x: 1, y: 0 };
+  let nextDir = { x: 1, y: 0 };
+  let food = { x: 10, y: 10 };
+  let grow = 0;
+  let stepTimer = 0;
+  let moveT = 1;        // 0..1 interpolation between steps
+  let trail = [];
+  let lastTime = 0;
+
+  function keyOf(p) {
+    return p.x + "," + p.y;
+  }
+
+  function sameDir(a, b) {
+    return a.x === b.x && a.y === b.y;
+  }
+
+  function isOpposite(a, b) {
+    return a.x === -b.x && a.y === -b.y;
+  }
+
+  function resetGame() {
+    score = 0;
+    scoreEl.textContent = "Score: 0";
+    // Start mid-left, facing right
+    snake = [
+      { x: 6, y: 10 },
+      { x: 5, y: 10 },
+      { x: 4, y: 10 },
+      { x: 3, y: 10 },
+    ];
+    prevSnake = snake.map((s) => ({ ...s }));
+    dir = { x: 1, y: 0 };
+    nextDir = { x: 1, y: 0 };
+    grow = 0;
+    stepTimer = 0;
+    moveT = 1;
+    trail = [];
+    placeFood();
+  }
+
+  function placeFood() {
+    const occupied = new Set(snake.map(keyOf));
+    let x, y, tries = 0;
+    do {
+      x = Math.floor(Math.random() * GRID);
+      y = Math.floor(Math.random() * GRID);
+      tries++;
+    } while (occupied.has(x + "," + y) && tries < 400);
+    food = { x, y };
+  }
+
+  function queueTurn(newDir) {
+    if (state !== "playing") return;
+    // Never reverse into yourself — classic snake rule
+    if (isOpposite(newDir, dir)) return;
+    nextDir = newDir;
+  }
+
+  function step() {
+    // Apply queued direction at the start of each grid step
+    dir = nextDir;
+
+    const head = snake[0];
+    const nx = head.x + dir.x;
+    const ny = head.y + dir.y;
+
+    // Wall collision
+    if (nx < 0 || nx >= GRID || ny < 0 || ny >= GRID) {
+      endGame();
+      return;
+    }
+
+    // Self collision (ignore tail if it will move away and we're not growing)
+    const nextHead = { x: nx, y: ny };
+    const bodyEnd = grow > 0 ? snake.length : snake.length - 1;
+    for (let i = 0; i < bodyEnd; i++) {
+      if (snake[i].x === nextHead.x && snake[i].y === nextHead.y) {
+        endGame();
+        return;
+      }
+    }
+
+    // Snapshot for smooth animation
+    prevSnake = snake.map((s) => ({ ...s }));
+
+    // Move: add new head
+    snake.unshift(nextHead);
+
+    // Eat food?
+    if (nextHead.x === food.x && nextHead.y === food.y) {
+      score += 10;
+      scoreEl.textContent = "Score: " + score;
+      grow += 1;
+      placeFood();
+    }
+
+    if (grow > 0) {
+      grow--;
+    } else {
+      snake.pop();
+    }
+
+    // Align prevSnake length for lerp (new head had no previous cell)
+    // prev positions: each segment came from the cell that was previously at i-1
+    // For rendering we lerp from prevSnake[i] toward snake[i], with head
+    // lerping from old head toward new head.
+    if (prevSnake.length < snake.length) {
+      // grew: append old tail as prev for the extra segment
+      prevSnake.push({ ...prevSnake[prevSnake.length - 1] });
+    } else if (prevSnake.length > snake.length) {
+      prevSnake.length = snake.length;
+    }
+
+    moveT = 0;
+  }
+
+  function update(dt) {
+    if (state !== "playing") return;
+
+    stepTimer += dt * 1000;
+    while (stepTimer >= STEP_MS && state === "playing") {
+      stepTimer -= STEP_MS;
+      step();
+    }
+
+    // Smooth progress between steps (ease slightly for nicer feel)
+    const raw = Math.min(1, stepTimer / STEP_MS);
+    // slight ease-out for a soft settle, still very snappy
+    moveT = 1 - (1 - raw) * (1 - raw) * 0.15 - (1 - raw) * 0.85;
+    // simpler linear is more classic — use mostly linear with tiny ease:
+    moveT = raw;
+
+    // Trail from visual head
+    if (state === "playing") {
+      const headPx = segmentPixel(0);
+      trail.push({ x: headPx.x, y: headPx.y, life: 1, r: CELL * 0.2 });
+      if (trail.length > TRAIL_MAX) trail.shift();
+    }
+    for (const t of trail) {
+      t.life -= dt * 2.2;
+      t.r *= 0.99;
+    }
+    trail = trail.filter((t) => t.life > 0);
+  }
+
+  // Pixel center of segment i, smoothly lerped between prev and current grid cells
+  function segmentPixel(i) {
+    const cur = snake[i];
+    const prev = prevSnake[i] || cur;
+    const t = state === "playing" ? moveT : 1;
+    return {
+      x: (prev.x + (cur.x - prev.x) * t + 0.5) * CELL,
+      y: (prev.y + (cur.y - prev.y) * t + 0.5) * CELL,
+    };
+  }
+
+  function allSegmentPixels() {
+    const pts = [];
+    for (let i = 0; i < snake.length; i++) pts.push(segmentPixel(i));
+    return pts;
+  }
+
+  function drawBackground(time) {
+    const g = ctx.createRadialGradient(300, 300, 40, 300, 300, 480);
+    g.addColorStop(0, "#10101c");
+    g.addColorStop(0.55, "#0a0a14");
+    g.addColorStop(1, "#06060c");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 600, 600);
+
+    const gp = 0.04 + 0.02 * Math.sin(time * 0.0015);
+    ctx.strokeStyle = "rgba(0, 255, 200, " + gp + ")";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i <= GRID; i++) {
+      const p = i * CELL;
+      ctx.moveTo(p, 0); ctx.lineTo(p, 600);
+      ctx.moveTo(0, p); ctx.lineTo(600, p);
+    }
+    ctx.stroke();
+
+    const vig = ctx.createRadialGradient(300, 300, 150, 300, 300, 430);
+    vig.addColorStop(0, "rgba(0,0,0,0)");
+    vig.addColorStop(1, "rgba(0,0,0,0.45)");
+    ctx.fillStyle = vig;
+    ctx.fillRect(0, 0, 600, 600);
+  }
+
+  function drawTrail() {
+    for (const t of trail) {
+      const a = t.life * 0.4;
+      const grad = ctx.createRadialGradient(t.x, t.y, 0, t.x, t.y, t.r * 3);
+      grad.addColorStop(0, "rgba(0, 255, 220, " + (a * 0.5) + ")");
+      grad.addColorStop(0.45, "rgba(80, 120, 255, " + (a * 0.22) + ")");
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(t.x, t.y, t.r * 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawSnake() {
+    if (!snake.length) return;
+    const body = allSegmentPixels();
+
+    // Soft glow ribbon under body
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.shadowColor = "rgba(0, 255, 200, 0.55)";
+    ctx.shadowBlur = 20;
+    ctx.strokeStyle = "rgba(0, 255, 210, 0.22)";
+    ctx.lineWidth = CELL * 0.7;
+    ctx.beginPath();
+    ctx.moveTo(body[0].x, body[0].y);
+    for (let i = 1; i < body.length; i++) ctx.lineTo(body[i].x, body[i].y);
+    ctx.stroke();
+    ctx.restore();
+
+    // Gradient segments head → tail (cyan → purple)
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    for (let i = 0; i < body.length - 1; i++) {
+      const t = i / Math.max(1, body.length - 1);
+      const r = Math.floor(0 + 120 * t);
+      const g = Math.floor(255 - 165 * t);
+      const b = Math.floor(220 + 35 * t);
+      const a = 1 - t * 0.4;
+      ctx.strokeStyle = "rgba(" + r + "," + g + "," + b + "," + a + ")";
+      ctx.lineWidth = CELL * (0.52 - t * 0.1);
+      ctx.shadowColor = "rgba(" + r + "," + g + "," + b + ",0.65)";
+      ctx.shadowBlur = 10 * (1 - t * 0.4);
+      ctx.beginPath();
+      ctx.moveTo(body[i].x, body[i].y);
+      ctx.lineTo(body[i + 1].x, body[i + 1].y);
+      ctx.stroke();
+    }
+    ctx.shadowBlur = 0;
+
+    // Pearl segments
+    for (let i = 0; i < body.length; i++) {
+      const t = i / Math.max(1, body.length - 1);
+      const radius = CELL * (0.3 - t * 0.07);
+      const r = Math.floor(40 + 100 * t);
+      const g = Math.floor(255 - 155 * t);
+      const b = Math.floor(230 + 25 * t);
+      const grad = ctx.createRadialGradient(
+        body[i].x - radius * 0.25,
+        body[i].y - radius * 0.25,
+        0,
+        body[i].x,
+        body[i].y,
+        radius
+      );
+      grad.addColorStop(0, "rgba(255,255,255," + (0.5 * (1 - t * 0.5)) + ")");
+      grad.addColorStop(0.35, "rgba(" + r + "," + g + "," + b + ",0.95)");
+      grad.addColorStop(1, "rgba(" + Math.floor(r * 0.3) + "," + Math.floor(g * 0.4) + "," + Math.floor(b * 0.55) + ",0.9)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(body[i].x, body[i].y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Head glow
+    const hx = body[0].x;
+    const hy = body[0].y;
+    const headGlow = ctx.createRadialGradient(hx, hy, 0, hx, hy, CELL * 0.8);
+    headGlow.addColorStop(0, "rgba(200, 255, 250, 0.5)");
+    headGlow.addColorStop(0.35, "rgba(0, 255, 220, 0.3)");
+    headGlow.addColorStop(1, "rgba(0, 255, 200, 0)");
+    ctx.fillStyle = headGlow;
+    ctx.beginPath();
+    ctx.arc(hx, hy, CELL * 0.8, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Eyes facing current direction
+    const eyeOff = CELL * 0.12;
+    const side = CELL * 0.11;
+    const perp = { x: -dir.y, y: dir.x };
+    for (const sign of [-1, 1]) {
+      const ex = hx + dir.x * eyeOff + perp.x * side * sign;
+      const ey = hy + dir.y * eyeOff + perp.y * side * sign;
+      ctx.fillStyle = "#041018";
+      ctx.beginPath();
+      ctx.arc(ex, ey, CELL * 0.075, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#b8fff0";
+      ctx.beginPath();
+      ctx.arc(ex + dir.x * 1.5, ey + dir.y * 1.5, CELL * 0.03, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawFood(time) {
+    const pulse = 0.5 + 0.5 * Math.sin(time * 0.006);
+    const cx = (food.x + 0.5) * CELL;
+    const cy = (food.y + 0.5) * CELL;
+    const r = CELL * (0.28 + pulse * 0.08);
+    const glowR = CELL * (0.7 + pulse * 0.35);
+
+    const ring = ctx.createRadialGradient(cx, cy, r * 0.5, cx, cy, glowR);
+    ring.addColorStop(0, "rgba(255, 60, 140, " + (0.35 + pulse * 0.25) + ")");
+    ring.addColorStop(0.5, "rgba(255, 100, 200, " + (0.15 + pulse * 0.1) + ")");
+    ring.addColorStop(1, "rgba(255, 50, 150, 0)");
+    ctx.fillStyle = ring;
+    ctx.beginPath();
+    ctx.arc(cx, cy, glowR, 0, Math.PI * 2);
+    ctx.fill();
+
+    const core = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.3, 0, cx, cy, r);
+    core.addColorStop(0, "#ffffff");
+    core.addColorStop(0.25, "#ff8ec8");
+    core.addColorStop(0.7, "#ff2d7a");
+    core.addColorStop(1, "#c01050");
+    ctx.shadowColor = "rgba(255, 40, 120, 0.9)";
+    ctx.shadowBlur = 18 + pulse * 12;
+    ctx.fillStyle = core;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = "rgba(255,255,255," + (0.55 + pulse * 0.2) + ")";
+    ctx.beginPath();
+    ctx.arc(cx - r * 0.28, cy - r * 0.28, r * 0.22, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawBorder() {
+    ctx.strokeStyle = "rgba(0, 255, 200, 0.12)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, 1, 598, 598);
+    ctx.strokeStyle = "rgba(120, 90, 255, 0.08)";
+    ctx.lineWidth = 6;
+    ctx.strokeRect(4, 4, 592, 592);
+  }
+
+  function frame(time) {
+    if (!lastTime) lastTime = time;
+    let dt = (time - lastTime) / 1000;
+    lastTime = time;
+    if (dt > 0.05) dt = 0.05;
+
+    update(dt);
+
+    drawBackground(time);
+
+    if (state === "playing" || state === "gameover") {
+      drawTrail();
+      drawFood(time);
+      drawSnake();
+    } else {
+      // Start screen: show idle food only
+      drawFood(time);
+    }
+
+    drawBorder();
+    requestAnimationFrame(frame);
+  }
+
+  function startGame() {
+    resetGame();
+    state = "playing";
+    startScreen.classList.add("hidden");
+    gameOverScreen.classList.add("hidden");
+    scoreEl.classList.add("visible");
+    lastTime = 0;
+  }
+
+  function endGame() {
+    if (state !== "playing") return;
+    state = "gameover";
+    moveT = 1;
+    finalScoreEl.textContent = String(score);
+    gameOverScreen.classList.remove("hidden");
+    scoreEl.classList.remove("visible");
+  }
+
+  startBtn.addEventListener("click", startGame);
+  restartBtn.addEventListener("click", startGame);
+
+  window.addEventListener("keydown", function (e) {
+    const d = DIR[e.key];
+    if (d) {
+      e.preventDefault();
+      if (state === "start" || state === "gameover") {
+        startGame();
+        // Allow first key to set initial direction if not reverse of default
+        if (!isOpposite(d, { x: 1, y: 0 })) {
+          nextDir = d;
+          dir = d;
+        }
+        return;
+      }
+      queueTurn(d);
+      return;
+    }
+    if ((e.key === " " || e.key === "Enter") && (state === "start" || state === "gameover")) {
+      e.preventDefault();
+      startGame();
+    }
+  });
+
+  resetGame();
+  state = "start";
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -4,7 +4,7 @@
 
 We kept running the `/design` command against every model we could get our hands on, mostly to settle arguments about which one actually has good taste. This repo is the receipts: 20 side-by-side runs across frontier models (Opus 4.8, Sonnet 5, GPT-5.5, Fable 5) and open models (GLM 5.2, DeepSeek V4 Pro, Kimi K2.7 Code).
 
-📖 Docs: [commandcode.ai/docs/slash-commands/design](https://commandcode.ai/docs/slash-commands/design)
+Docs: [commandcode.ai/docs/slash-commands/design](https://commandcode.ai/docs/slash-commands/design)
 
 The short version: GLM 5.2 keeps matching or beating closed models on design precision, motion, and UX, for a fraction of the cost. DeepSeek V4 Pro is closing the gap fast too.
 

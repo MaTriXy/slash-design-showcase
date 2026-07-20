@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OVERRUN — Containment Zone FPS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=Big+Shoulders+Display:wght@700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<script type="importmap">
+{ "imports": { "three": "./js/vendor/three.module.min.js" } }
+</script>
+</head>
+<body>
+<div id="game-container"></div>
+
+<!-- ============ HUD ============ -->
+<div id="hud" class="hidden">
+  <!-- Crosshair -->
+  <div id="crosshair">
+    <div class="ch-line ch-t"></div>
+    <div class="ch-line ch-b"></div>
+    <div class="ch-line ch-l"></div>
+    <div class="ch-line ch-r"></div>
+    <div class="ch-dot"></div>
+  </div>
+  <!-- Hitmarker -->
+  <div id="hitmarker">
+    <span></span><span></span><span></span><span></span>
+  </div>
+  <!-- Sniper scope -->
+  <div id="scope-overlay" class="hidden">
+    <div class="scope-h"></div>
+    <div class="scope-v"></div>
+  </div>
+  <!-- Damage vignette + low hp -->
+  <div id="damage-vignette"></div>
+  <div id="lowhp-vignette"></div>
+  <div id="heal-flash"></div>
+
+  <!-- Top left: score -->
+  <div class="hud-corner hud-tl">
+    <div class="hud-label">Score</div>
+    <div id="score-value" class="hud-big">0</div>
+    <div class="hud-sub">BEST <span id="hiscore-hud">0</span></div>
+  </div>
+
+  <!-- Top center: level -->
+  <div class="hud-corner hud-tc">
+    <div id="level-name" class="hud-label">LEVEL 1 — BREACH</div>
+    <div id="enemies-left" class="hud-hostiles">HOSTILES <span id="hostiles-count">0</span></div>
+  </div>
+
+  <!-- Bottom left: health -->
+  <div class="hud-corner hud-bl">
+    <div class="hud-label">Integrity</div>
+    <div id="health-bar-wrap">
+      <div id="health-ghost"></div>
+      <div id="health-bar"></div>
+    </div>
+    <div id="health-value" class="hud-big">100</div>
+  </div>
+
+  <!-- Bottom right: weapon -->
+  <div class="hud-corner hud-br">
+    <div id="weapon-name" class="hud-label">P9 SIDEARM</div>
+    <div id="ammo-row">
+      <span id="ammo-mag">12</span><span id="ammo-reserve">/ 72</span>
+    </div>
+    <div id="reload-bar-wrap" class="hidden"><div id="reload-bar"></div></div>
+    <div id="weapon-slots">
+      <span data-slot="1" class="slot active">1</span>
+      <span data-slot="2" class="slot">2</span>
+      <span data-slot="3" class="slot">3</span>
+      <span data-slot="4" class="slot">4</span>
+    </div>
+  </div>
+
+  <!-- Kill popups get injected here -->
+  <div id="popup-layer"></div>
+
+  <!-- Center banner (level intro / clear) -->
+  <div id="banner" class="hidden">
+    <div id="banner-title">LEVEL 1</div>
+    <div id="banner-sub">CLEAR ALL HOSTILES</div>
+  </div>
+</div>
+
+<!-- ============ START MENU ============ -->
+<div id="menu-screen" class="screen">
+  <div class="screen-inner">
+    <div class="menu-tag">CONTAINMENT PROTOCOL 7</div>
+    <h1 class="game-title">OVER<span>RUN</span></h1>
+    <p class="menu-desc">The zone is breached. Four sectors, endless hostiles.<br>Clear every sector. Stay standing.</p>
+    <button id="btn-start" class="btn btn-primary">Deploy</button>
+    <div class="menu-hiscore">HIGH SCORE — <span id="menu-hiscore">0</span></div>
+    <div class="controls-grid">
+      <div><kbd>W A S D</kbd> Move</div>
+      <div><kbd>MOUSE</kbd> Look</div>
+      <div><kbd>LMB</kbd> Fire</div>
+      <div><kbd>RMB</kbd> Aim / Scope</div>
+      <div><kbd>SHIFT</kbd> Sprint</div>
+      <div><kbd>SPACE</kbd> Jump</div>
+      <div><kbd>R</kbd> Reload</div>
+      <div><kbd>1–4</kbd> Weapons</div>
+      <div><kbd>ESC</kbd> Pause</div>
+      <div><kbd>M</kbd> Mute</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ PAUSE ============ -->
+<div id="pause-screen" class="screen hidden">
+  <div class="screen-inner">
+    <h2 class="screen-title">PAUSED</h2>
+    <button id="btn-resume" class="btn btn-primary">Resume</button>
+    <button id="btn-restart-pause" class="btn">Restart run</button>
+    <button id="btn-quit-pause" class="btn btn-ghost">Quit to menu</button>
+    <div class="pause-settings">
+      <label>Sensitivity <input type="range" id="opt-sens" min="0.3" max="2.5" step="0.1" value="1"></label>
+      <label>Volume <input type="range" id="opt-volume" min="0" max="1" step="0.05" value="0.8"></label>
+    </div>
+  </div>
+</div>
+
+<!-- ============ GAME OVER ============ -->
+<div id="gameover-screen" class="screen hidden">
+  <div class="screen-inner">
+    <h2 class="screen-title danger">FLATLINED</h2>
+    <p class="screen-sub">The zone took you.</p>
+    <div class="stats-grid">
+      <div><span class="stat-num" id="go-score">0</span><span class="stat-label">Score</span></div>
+      <div><span class="stat-num" id="go-kills">0</span><span class="stat-label">Kills</span></div>
+      <div><span class="stat-num" id="go-accuracy">0%</span><span class="stat-label">Accuracy</span></div>
+      <div><span class="stat-num" id="go-level">1</span><span class="stat-label">Sector</span></div>
+    </div>
+    <div id="go-newbest" class="new-best hidden">NEW HIGH SCORE</div>
+    <button id="btn-retry" class="btn btn-primary">Run it back</button>
+    <button id="btn-quit-go" class="btn btn-ghost">Menu</button>
+  </div>
+</div>
+
+<!-- ============ WIN ============ -->
+<div id="win-screen" class="screen hidden">
+  <div class="screen-inner">
+    <h2 class="screen-title success">ZONE CLEARED</h2>
+    <p class="screen-sub">All four sectors secured. Containment restored.</p>
+    <div class="stats-grid">
+      <div><span class="stat-num" id="win-score">0</span><span class="stat-label">Score</span></div>
+      <div><span class="stat-num" id="win-kills">0</span><span class="stat-label">Kills</span></div>
+      <div><span class="stat-num" id="win-accuracy">0%</span><span class="stat-label">Accuracy</span></div>
+      <div><span class="stat-num" id="win-time">0:00</span><span class="stat-label">Time</span></div>
+    </div>
+    <div id="win-newbest" class="new-best hidden">NEW HIGH SCORE</div>
+    <button id="btn-again" class="btn btn-primary">Go again</button>
+    <button id="btn-quit-win" class="btn btn-ghost">Menu</button>
+  </div>
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

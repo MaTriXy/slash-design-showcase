@@ -113,11 +113,11 @@
 </head>
 <body>
 <div class="stage">
-  <canvas id="game" width="800" height="500"></canvas>
+  <canvas id="game" width="800" height="500" tabindex="0"></canvas>
 
   <div class="overlay show" id="startScreen">
     <div class="title">NEON <span class="pink">BREAKOUT</span></div>
-    <div class="subtitle">MOVE MOUSE TO CONTROL &middot; BREAK EVERYTHING</div>
+    <div class="subtitle">ARROW KEYS / A&middot;D OR MOUSE &middot; SPACE OR CLICK TO LAUNCH</div>
     <button id="startBtn">START</button>
   </div>
 
@@ -146,10 +146,15 @@
   let shake = 0;
 
   // ---------- Paddle ----------
+  const PADDLE_SPEED = 9; // classic constant-speed keyboard movement
   const paddle = { w: 120, h: 14, x: W / 2 - 60, y: H - 36, targetX: W / 2 - 60 };
 
-  // ---------- Ball ----------
-  const ball = { x: W / 2, y: H - 60, r: 8, vx: 0, vy: 0, speed: 6, trail: [] };
+  // ---------- Input mode ----------
+  let usingKeyboard = false;
+  const keys = { left: false, right: false };
+
+  // ---------- Ball (slower, classic Breakout-style speed) ----------
+  const ball = { x: W / 2, y: H - 60, r: 8, vx: 0, vy: 0, speed: 4.2, maxSpeed: 7.5, trail: [] };
 
   // ---------- Bricks ----------
   const ROWS = 6, COLS = 12;
@@ -209,18 +214,40 @@
     sp: 0.4 + Math.random() * 0.8
   }));
 
-  // ---------- Input ----------
+  // ---------- Input: mouse ----------
   canvas.addEventListener('mousemove', e => {
+    usingKeyboard = false;
     const rect = canvas.getBoundingClientRect();
     const mx = (e.clientX - rect.left) * (W / rect.width);
     paddle.targetX = Math.min(Math.max(mx - paddle.w / 2, 8), W - paddle.w - 8);
   });
   canvas.addEventListener('click', () => {
+    canvas.focus();
     if (state === S.SERVE) launchBall();
   });
 
-  document.getElementById('startBtn').addEventListener('click', startGame);
-  document.getElementById('restartBtn').addEventListener('click', startGame);
+  // ---------- Input: keyboard ----------
+  window.addEventListener('keydown', e => {
+    if (['ArrowLeft', 'ArrowRight', 'a', 'A', 'd', 'D', ' '].includes(e.key)) {
+      e.preventDefault();
+    }
+    if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
+      keys.left = true;
+      usingKeyboard = true;
+    }
+    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+      keys.right = true;
+      usingKeyboard = true;
+    }
+    if (e.key === ' ' && state === S.SERVE) launchBall();
+  });
+  window.addEventListener('keyup', e => {
+    if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.left = false;
+    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.right = false;
+  });
+
+  document.getElementById('startBtn').addEventListener('click', () => { startGame(); canvas.focus(); });
+  document.getElementById('restartBtn').addEventListener('click', () => { startGame(); canvas.focus(); });
 
   function startGame() {
     score = 0; lives = 3; level = 1;
@@ -242,7 +269,7 @@
   function launchBall() {
     state = S.PLAY;
     const angle = -Math.PI / 2 + (Math.random() * 0.6 - 0.3);
-    const sp = ball.speed + (level - 1) * 0.6;
+    const sp = ball.speed + (level - 1) * 0.4;
     ball.vx = Math.cos(angle) * sp;
     ball.vy = Math.sin(angle) * sp;
   }
@@ -259,8 +286,15 @@
 
   // ---------- Update ----------
   function update() {
-    // Smooth paddle glide
-    paddle.x += (paddle.targetX - paddle.x) * 0.35;
+    // Keyboard movement: direct constant-speed control, classic-arcade feel
+    if (usingKeyboard) {
+      if (keys.left) paddle.targetX -= PADDLE_SPEED;
+      if (keys.right) paddle.targetX += PADDLE_SPEED;
+      paddle.targetX = Math.min(Math.max(paddle.targetX, 8), W - paddle.w - 8);
+    }
+
+    // Smooth paddle glide (snappier response than before)
+    paddle.x += (paddle.targetX - paddle.x) * 0.55;
 
     // Twinkle stars
     for (const s of stars) s.tw += 0.03 * s.sp;
@@ -324,8 +358,8 @@
           if (overlapX < overlapY) ball.vx *= -1;
           else ball.vy *= -1;
 
-          // tiny speed up
-          const sp = Math.min(Math.hypot(ball.vx, ball.vy) * 1.008, 11);
+          // very slight, capped speed up (classic Breakout ramps gently)
+          const sp = Math.min(Math.hypot(ball.vx, ball.vy) * 1.003, ball.maxSpeed);
           const ang = Math.atan2(ball.vy, ball.vx);
           ball.vx = Math.cos(ang) * sp;
           ball.vy = Math.sin(ang) * sp;
@@ -481,7 +515,7 @@
       ctx.fillStyle = `rgba(255, 255, 255, ${0.35 + a * 0.45})`;
       ctx.shadowColor = '#00e5ff';
       ctx.shadowBlur = 6;
-      ctx.fillText('CLICK TO LAUNCH', W / 2, H / 2 + 60);
+      ctx.fillText('CLICK OR SPACE TO LAUNCH', W / 2, H / 2 + 60);
       ctx.restore();
     }
 
